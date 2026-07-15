@@ -265,6 +265,18 @@ def inject_css():
 # ══════════════════════════════════════════════════════════════════════
 def init_state():
     ss = st.session_state
+    
+    if "user" not in ss:
+        t = st.query_params.get("t")
+        if t:
+            try:
+                from app.services.auth import verify_token
+                ss["user"] = verify_token(t)
+            except Exception:
+                ss["user"] = None
+        else:
+            ss["user"] = None
+            
     ss.setdefault("user", None)        # {email, name, gender, mbti, title}
     ss.setdefault("page", "home")      # home|chat|diagnose|explore|graph
     ss.setdefault("msgs", [])          # [{role, person_id, text, verses}]
@@ -315,6 +327,7 @@ def header():
                 ss.user = None
                 ss.msgs, ss.active, ss.card, ss.seed = [], None, None, None
                 ss.shared_memory = ""
+                st.query_params.clear()
                 go("home")
         else:
             if st.button("로그인 · 회원가입", key="auth_btn",
@@ -343,6 +356,13 @@ def _login_user(profile: dict):
     ss = st.session_state
     ss.user = profile
     ss.auth_open = False
+    
+    try:
+        from app.services.auth import issue_token
+        st.query_params["t"] = issue_token(profile["email"])
+    except Exception:
+        pass
+        
     if ss.seed:
         ss.page = "chat"
 

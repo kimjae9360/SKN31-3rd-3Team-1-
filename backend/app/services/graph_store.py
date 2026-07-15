@@ -3,27 +3,27 @@ app/services/graph_store.py
 ────────────────────────────────────────────────────────────────────────
 Neo4j Graph DB 서비스.
 
-실제 팀 스키마 (2026-07, 라이브 Neo4j에 직접 접속해 확인):
-  (:Disciple {id, name, title, speech_style})
-  (:Jesus {name})
+실제 팀 스키마 (2026-07, 라이브 Neo4j에 직접 접속해 확인 + 팀 스냅샷 병합):
+  (:Disciple {id, name, title, speech_style, quote, quote_ref, traits, role,
+              epithet, person_order})
+  (:Jesus {name, quote, quote_ref, traits, role, epithet, person_order, mbti})
   (:MBTI {type})
   (:Trait {name})
   (:Verse {ref, text})
   (:User {name, mbti, created_at})
 
   (Disciple)-[:FOLLOWS]->(Jesus)
-  (Disciple)-[:HAS_MBTI {rank}]->(MBTI)     제자 자신과 어울리는 MBTI (1,2순위)
-  (MBTI)-[:MATCHES]->(Disciple)             사용자 MBTI → 직접 매칭되는 제자 (16종 1:1)
+  (Disciple)-[:HAS_MBTI {rank}]->(MBTI)          제자 자신과 어울리는 MBTI (1,2순위)
+  (MBTI)-[:MATCHES]->(Disciple)                  사용자 MBTI → 직접 매칭되는 제자 (16종 1:1)
+  (MBTI)-[:MBTI_COMPATIBILITY {score}]->(MBTI)   16×16 전체 궁합 매트릭스 (팀 curated 데이터)
   (Disciple)-[:HAS_TRAIT]->(Trait)
   (Disciple)-[:RELATED_VERSE]->(Verse)
   (Disciple)-[:BROTHER_OF]->(Disciple)
   (User)-[:MATCHED_WITH {matched_at}]->(Disciple)
 
-주의: Person/Book/MBTI_COMPATIBILITY/APPEAR 라벨은 예전 설계 문서에는
-있었지만 실제 그래프에는 존재하지 않습니다(라이브 DB 조회 시 "label does
-not exist" 경고). MBTI 코드 간 궁합 관계도 그래프에 없어, 궁합 순위는
-(1) 사용자 MBTI와 직접 MATCHES 되는 제자를 최우선으로, (2) 나머지는 제자
-자신의 HAS_MBTI(1,2순위)와 사용자 MBTI의 글자 일치도로 근사해 매깁니다.
+주의: Person/Book/APPEAR 라벨은 예전 설계 문서에 있었지만 이 그래프에는 없다
+(팀 스냅샷도 별도 Person/Book 그래프였고, person_id로 매칭해서 quote/traits/
+role/epithet 속성만 기존 Disciple/Jesus 노드에 병합했다 — 라벨 구조는 그대로).
 
 연결은 드라이버를 싱글턴으로 재사용합니다.
 """
