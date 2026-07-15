@@ -164,7 +164,6 @@ def inject_css():
      말풍선을 뚫고 나가 깨진다 — 명시적으로 막는다. */
   .ed-verse {{
     display: block; box-sizing: border-box;
-    max-width: 100%; width: 100%;
     margin: 10px 0 2px; padding: 10px 12px;
     border: 1px solid {LINE}; border-left: 3px solid {ACCENT};
     border-radius: 0 10px 10px 0; background: #F6F8EF;
@@ -198,8 +197,8 @@ def inject_css():
      st.button(key="logo_home") → 래퍼 div 에 .st-key-logo_home 클래스가 붙는다. */
   .st-key-logo_home button {{
     background: transparent !important; border: none !important; box-shadow: none !important;
-    padding: 0 !important; height: 46px !important;
-    font-family: Cormorant, serif !important; font-size: 30px !important;
+    padding: 0 !important; height: 56px !important;
+    font-family: Cormorant, serif !important; font-size: 42px !important;
     font-weight: 700 !important; color: {INK} !important;
     justify-content: flex-start !important; letter-spacing: -.01em;
   }}
@@ -243,8 +242,14 @@ def inject_css():
   /* 말풍선 안 콘텐츠가 밖으로 새지 않도록 */
   [data-testid="stChatMessage"] * {{ overflow-wrap: anywhere; }}
 
+  [data-testid="stBottom"] > div {{
+    padding-bottom: 24px;
+    background: transparent !important;
+  }}
   [data-testid="stChatInput"] {{
-    border-radius: 16px; border: 1px solid {LINE}; background: {CARD};
+    border-radius: 24px; border: 1px solid {LINE}; background: {CARD};
+    max-width: 760px; margin: 0 auto;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.06);
   }}
 </style>
 """,
