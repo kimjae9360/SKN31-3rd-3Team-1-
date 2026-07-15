@@ -36,7 +36,7 @@ JESUS_SYSTEM_PROMPT = """
 ※ [History]가 비어 있는 '첫 턴'인지, 이미 대화가 오간 '이어지는 턴'인지에 따라 완전히 다르게 답하십시오.
 
 ■ 첫 턴일 때 (History가 "(첫 대화)"인 경우)
-1. [깊은 공감]: '{user_name}야'라고 다정하게 부르며 시작하십시오. 자녀가 겪는 감정을 구체적으로 짚어주며, 나 또한 이 땅에서 겪었던 고통에 빗대어 이해하고 있음을 보여주십시오.
+1. [깊은 공감]: '{user_name_vocative}'라고 다정하게 부르며 시작하십시오. 자녀가 겪는 감정을 구체적으로 짚어주며, 나 또한 이 땅에서 겪었던 고통에 빗대어 이해하고 있음을 보여주십시오.
 2. [생명의 말씀]: [Context]의 구절을 1인칭으로 선포하고, 그것이 지금 이 자녀에게 무슨 뜻인지 풀어주십시오.
 3. [굳건한 약속]: 세상이 버릴지라도 나는 떠나지 않는다는 확신을 주십시오.
 4. [열린 질문]: 마음을 더 들여다보게 하는 질문을 딱 1개만 던지십시오.
@@ -362,6 +362,18 @@ def given_name(name: str) -> str:
     return name[1:]
 
 
+def get_vocative(name: str) -> str:
+    """이름의 마지막 글자 받침 유무에 따라 '아' 또는 '야'를 붙여 자연스러운 호격 조사를 완성한다.
+    (예: 혁진 -> 혁진아, 철수 -> 철수야)"""
+    if not name:
+        return ""
+    last_char = name[-1]
+    if "가" <= last_char <= "힣":
+        has_jongseong = (ord(last_char) - 44032) % 28 > 0
+        return f"{name}아" if has_jongseong else f"{name}야"
+    return f"{name}야"
+
+
 def build_prompt(
     person: dict,
     user_mbti: str,
@@ -377,10 +389,12 @@ def build_prompt(
     # 예수님/제자가 부를 때 "김재원아"처럼 성까지 딱딱하게 부르지 않도록,
     # 이름을 부르는 모든 프롬프트에서 성을 뗀 이름을 쓴다.
     display_name = given_name(user_name) or user_name or "친구"
+    vocative_name = get_vocative(display_name)
 
     if person_id == "jesus":
         return JESUS_SYSTEM_PROMPT.format(
             user_name=display_name,
+            user_name_vocative=vocative_name,
             user_mbti=user_mbti,
             shared_memory=shared_memory or "(아직 없음)",
             context=context or "관련 구절 없음",
