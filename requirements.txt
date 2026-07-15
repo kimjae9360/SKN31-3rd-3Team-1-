@@ -1,0 +1,27 @@
+# ── Streamlit 프로토타입 ────────────────────────────────
+streamlit>=1.36
+python-dotenv>=1.0
+
+# ── 설정/검증 (백엔드 config 그대로 사용) ──────────────
+pydantic>=2.6
+pydantic-settings>=2.2
+
+# ── LangChain / RAG ─────────────────────────────────────
+langchain>=0.2
+langchain-core>=0.2
+langchain-community>=0.2
+langchain-openai>=0.1
+langchain-chroma>=0.1
+
+# ── Vector DB (chroma_db 있을 때만 실제 검색) ──────────
+chromadb>=0.5
+
+# ── Graph DB (Neo4j 있을 때만, 없으면 목업 폴백) ───────
+neo4j>=5.18
+
+# 참고:
+#  · langchain-huggingface / sentence-transformers 는 무겁고
+#    Streamlit Cloud 무료 티어에서 메모리 초과가 잦아 제외했습니다.
+#    HF 임베딩을 쓰려면 아래 주석을 해제하세요.
+# langchain-huggingface>=0.0.3
+# sentence-transformers>=2.6
