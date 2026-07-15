@@ -99,6 +99,29 @@ def build_vector_store(batch_size: int = 500):
     return len(documents)
 
 
+def vector_store_is_empty() -> bool:
+    """저장된 chroma_db가 없거나 구절이 0개인지 확인 (자동 재생성 트리거 조건)."""
+    try:
+        store = get_vector_store()
+        return store._collection.count() == 0
+    except Exception:
+        return True
+
+
+def ensure_vector_store() -> int:
+    """
+    벡터DB가 비어있으면(최초 배포/클라우드 콜드스타트 등) bible_structured.json으로부터
+    자동으로 재생성한다. 이미 구절이 있으면 아무 것도 하지 않고 0을 반환.
+    반환값: 새로 임베딩한 구절 수 (재생성 없었으면 0).
+    """
+    if not vector_store_is_empty():
+        return 0
+    get_vector_store.cache_clear()  # 재생성 후 새 컬렉션을 다시 로드하도록
+    n = build_vector_store()
+    get_vector_store.cache_clear()
+    return n
+
+
 def search(query: str, k: int | None = None, books: list[str] | None = None):
     """
     성경 구절 유사도 검색.

@@ -3,17 +3,35 @@ app/services/graph_store.py
 ────────────────────────────────────────────────────────────────────────
 Neo4j Graph DB 서비스.
 
-역할: "이 사용자에게 어떤 제자가 맞는가"를 그래프 관계로 계산.
-      기존 app2.py의 궁합 쿼리를 확장해, 추천 제자와 함께
-      그 제자의 성향(Trait)·연관 성경서(Versus)까지 한 번에 가져옵니다.
-      → 이 성경서 목록이 vector_store.search(books=...) 의 필터로 넘어갑니다.
-        (Hybrid RAG의 'Graph가 Vector를 안내' 하는 연결고리)
+실제 팀 스키마 (2026-07 확인):
+  (:Disciple {id, name, title, speech_style})
+  (:Jesus {name})
+  (:MBTI {type})
+  (:Trait {name})
+  (:Verse {ref, text})
+  (:User {name, mbti, created_at})
+
+  (Disciple)-[:FOLLOWS]->(Jesus)
+  (Disciple)-[:HAS_MBTI {rank}]->(MBTI)     제자 자신과 어울리는 MBTI (1,2순위)
+  (MBTI)-[:MATCHES]->(Disciple)             사용자 MBTI → 직접 매칭되는 제자 (16종 1:1)
+  (Disciple)-[:HAS_TRAIT]->(Trait)
+  (Disciple)-[:RELATED_VERSE]->(Verse)
+  (Disciple)-[:BROTHER_OF]->(Disciple)
+  (User)-[:MATCHED_WITH {matched_at}]->(Disciple)
+
+주의: MBTI 코드 간 궁합 관계(예 옛 설계의 MBTI_COMPATIBILITY)는 이 그래프에
+존재하지 않습니다. 궁합 순위는 (1) 사용자 MBTI와 직접 MATCHES 되는 제자를
+최우선으로, (2) 나머지는 제자 자신의 HAS_MBTI(1,2순위)와 사용자 MBTI의
+글자 일치도로 근사해 매깁니다.
 
 연결은 드라이버를 싱글턴으로 재사용합니다.
 """
 
 from functools import lru_cache
 from app.core.config import settings
+from app.services import mock_data
+
+TYPE_ORDER = mock_data.TYPE_ORDER
 
 
 @lru_cache
@@ -32,66 +50,104 @@ def close_driver():
         get_driver.cache_clear()
 
 
-# ── 궁합 기반 제자 추천 (+ 성향/성경서) ─────────────────────────────────
-# 팀 Neo4j 스키마:
-#   (Person)-[:HAS_MBTI]->(MBTI)  또는 Person.mbti 프로퍼티
-#   (MBTI)-[:MBTI_COMPATIBILITY {score}]->(MBTI)
-#   (Person)-[:HAS_TRAIT]->(Trait)          (팀원1)
-#   (Person)-[:RELATED_TO]->(Versus{book})  (팀원2)
-# 스키마가 확정되면 이 Cypher만 팀 구조에 맞게 손보면 됩니다.
-_RECOMMEND_CYPHER = """
-MATCH (u:MBTI {code: $user_mbti})
-      -[c:MBTI_COMPATIBILITY]->(target:MBTI)
-MATCH (p:Person)
-WHERE p.mbti = target.code AND coalesce(p.role,'') <> '선한 목자'
-OPTIONAL MATCH (p)-[:HAS_TRAIT]->(t:Trait)
-OPTIONAL MATCH (p)-[:RELATED_TO]->(v:Versus)
-RETURN p.person_id      AS id,
-       p.name           AS name,
-       p.mbti           AS mbti,
-       p.role           AS role,
-       p.traits         AS traits,
-       p.quote          AS quote,
-       p.quote_ref      AS quote_ref,
-       c.score          AS score,
+def _mbti_overlap(a: str, b: str) -> float:
+    """두 MBTI 코드의 글자 일치 비율(0~1). 그래프에 MBTI-MBTI 궁합 관계가 없어 유사도로 근사."""
+    if not a or not b or len(a) != 4 or len(b) != 4:
+        return 0.0
+    return sum(1 for x, y in zip(a, b) if x == y) / 4
+
+
+_DIRECT_MATCH_CYPHER = """
+MATCH (:MBTI {type: $user_mbti})-[:MATCHES]->(d:Disciple)
+RETURN d.id AS id
+"""
+
+_ALL_DISCIPLES_CYPHER = """
+MATCH (d:Disciple)
+OPTIONAL MATCH (d)-[h:HAS_MBTI]->(dm:MBTI)
+WITH d, collect({type: dm.type, rank: h.rank}) AS mbtis
+OPTIONAL MATCH (d)-[:HAS_TRAIT]->(t:Trait)
+WITH d, mbtis, collect(DISTINCT t.name) AS trait_nodes
+OPTIONAL MATCH (d)-[:RELATED_VERSE]->(v:Verse)
+RETURN d.id AS id, d.name AS name, d.title AS role, d.speech_style AS speech_style,
+       mbtis, trait_nodes,
+       collect(DISTINCT {ref: v.ref, text: v.text}) AS verses
+"""
+
+_ONE_DISCIPLE_CYPHER = """
+MATCH (d:Disciple {id: $pid})
+OPTIONAL MATCH (d)-[:HAS_TRAIT]->(t:Trait)
+OPTIONAL MATCH (d)-[:RELATED_VERSE]->(v:Verse)
+RETURN d.id AS id, d.name AS name, d.title AS role, d.speech_style AS speech_style,
        collect(DISTINCT t.name) AS trait_nodes,
-       collect(DISTINCT v.book) AS books
-ORDER BY score DESC, p.person_order
-LIMIT $limit
+       collect(DISTINCT {ref: v.ref, text: v.text}) AS verses
 """
 
 
-def recommend_disciples(user_mbti: str, limit: int = 3) -> list[dict]:
+def _row_to_person(row: dict) -> dict:
+    """Neo4j 조회 결과 + mock_data(팀 원본 성경서/대표 인용구)를 합쳐 카드/프롬프트용 dict로 만든다.
+    id로 1:1 매핑되는 정적 표시 데이터(quote, books)는 그래프에 없으므로 mock_data에서 보완한다."""
+    pid = row["id"]
+    mock = mock_data.PEOPLE.get(pid, {})
+    verses = [v for v in (row.get("verses") or []) if v.get("ref")]
+    return {
+        "id": pid,
+        "name": row["name"],
+        "role": row.get("role") or mock.get("role", ""),
+        "speech_style": row.get("speech_style", ""),
+        "traits": " · ".join(row.get("trait_nodes") or []) or mock.get("traits", "—"),
+        "quote": mock.get("quote") or (verses[0]["text"] if verses else ""),
+        "quote_ref": mock.get("quote_ref") or (verses[0]["ref"] if verses else ""),
+        "books": mock.get("books", []),
+        "verses": verses,
+    }
+
+
+def recommend_disciples(user_mbti: str, limit: int = 12) -> list[dict]:
     """
     사용자 MBTI로 궁합 좋은 제자 상위 N명을 반환.
-    각 항목에 연관 성경서(books)가 포함되어 hybrid 검색 필터로 쓰입니다.
+    (MBTI)-[:MATCHES]->(Disciple) 직접 매칭이 있으면 최고점(100)을 주고,
+    나머지는 제자 자신의 HAS_MBTI(1,2순위)와의 글자 유사도로 순위를 매긴다.
+    각 항목의 verses(연관 구절)가 hybrid 검색 컨텍스트 보강에 쓰인다.
     """
     with get_driver().session(database=settings.NEO4J_DATABASE) as session:
-        rows = session.run(_RECOMMEND_CYPHER, user_mbti=user_mbti, limit=limit).data()
-    return rows
+        direct_ids = {r["id"] for r in session.run(_DIRECT_MATCH_CYPHER, user_mbti=user_mbti).data()}
+        rows = session.run(_ALL_DISCIPLES_CYPHER).data()
+
+    ranked = []
+    for row in rows:
+        mbtis = sorted((m for m in row["mbtis"] if m.get("type")), key=lambda m: m.get("rank") or 9)
+        best = 0.0
+        for m in mbtis:
+            weight = 1.2 if m.get("rank") == 1 else 0.8
+            best = max(best, _mbti_overlap(user_mbti, m["type"]) * weight)
+        score = 100.0 if row["id"] in direct_ids else round(best * 70, 1)
+
+        person = _row_to_person(row)
+        person["mbti"] = mbtis[0]["type"] if mbtis else ""
+        person["score"] = score
+        ranked.append(person)
+
+    ranked.sort(key=lambda r: r["score"], reverse=True)
+    return ranked[:limit]
 
 
 def get_person(person_id: str) -> dict | None:
-    """단일 인물 프로필 조회 (프로필 카드용)."""
-    cypher = """
-    MATCH (p:Person {person_id: $pid})
-    OPTIONAL MATCH (p)-[:RELATED_TO]->(v:Versus)
-    RETURN p.person_id AS id, p.name AS name, p.mbti AS mbti, p.role AS role,
-           p.traits AS traits, p.quote AS quote, p.quote_ref AS quote_ref,
-           collect(DISTINCT v.book) AS books
-    """
+    """단일 인물 프로필 조회 (프로필 카드/페르소나 프롬프트용).
+    Jesus는 Disciple 라벨이 아니라 여기서 None을 반환 → 상위(hybrid_rag)가 mock_data로 폴백."""
     with get_driver().session(database=settings.NEO4J_DATABASE) as session:
-        rec = session.run(cypher, pid=person_id).data()
-    return rec[0] if rec else None
+        rec = session.run(_ONE_DISCIPLE_CYPHER, pid=person_id).data()
+    if not rec:
+        return None
+    return _row_to_person(rec[0])
 
 
 def best_matching_mbti(mbti: str, limit: int = 3) -> list[str]:
-    """해당 MBTI와 궁합 좋은 상위 MBTI 코드 (프로필 카드 '잘 맞는 MBTI')."""
-    cypher = """
-    MATCH (:MBTI {code: $mbti})-[c:MBTI_COMPATIBILITY]->(m:MBTI)
-    WHERE m.code <> $mbti
-    RETURN m.code AS code ORDER BY c.score DESC LIMIT $limit
-    """
-    with get_driver().session(database=settings.NEO4J_DATABASE) as session:
-        rows = session.run(cypher, mbti=mbti, limit=limit).data()
-    return [r["code"] for r in rows]
+    """해당 MBTI와 궁합 좋은 상위 MBTI 코드. 그래프에 MBTI-MBTI 궁합 관계가 없어 글자 유사도로 근사.
+    (현재 프론트는 mock_data.best_matching_mbti의 팀 큐레이션 매트릭스를 우선 사용하고,
+     이 함수는 향후 Neo4j 단독 경로가 필요할 때를 위한 대비용이다.)"""
+    pairs = sorted(
+        ((t, _mbti_overlap(mbti, t)) for t in TYPE_ORDER if t != mbti),
+        key=lambda x: x[1], reverse=True,
+    )
+    return [t for t, _ in pairs[:limit]]

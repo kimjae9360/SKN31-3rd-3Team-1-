@@ -83,6 +83,41 @@ def recommend(user_mbti: str, message: str, emo_weight: float = 1.0) -> dict:
 
 
 # ══════════════════════════════════════════════════════════════════════
+# [1.5] 예수님과의 자유 대화 → 제자 추천 시점 판단
+# ══════════════════════════════════════════════════════════════════════
+MIN_JESUS_TURNS = 2   # 이보다 적으면 아직 추천하지 않음 (최소 대화 보장)
+MAX_JESUS_TURNS = 6   # 이보다 많으면 LLM 판단 없이 강제 추천 (무한 대화 방지)
+
+
+def should_recommend(jesus_history: str) -> bool:
+    """
+    예수님과 나눈 대화가 제자를 추천할 만큼 충분히 깊어졌는지 판단.
+    사용자 턴 수로 최소/최대 안전장치를 두고, 그 사이 구간은 LLM이 판단한다.
+    """
+    user_turns = jesus_history.count("사용자:")
+    if user_turns < MIN_JESUS_TURNS:
+        return False
+    if user_turns >= MAX_JESUS_TURNS:
+        return True
+
+    llm = get_llm(temperature=0)
+    prompt = (
+        "다음은 사용자가 예수님과 나눈 상담 대화다. 사용자가 자신의 고민과 감정을 "
+        "구체적으로 충분히 털어놓아서, 이제 그에게 맞는 제자(상담을 이어갈 파트너)를 "
+        "추천해도 괜찮은 시점인지 판단하라. 고민의 실체가 아직 불명확하거나 대화가 "
+        "너무 표면적이면 '아니오'라고 답하라.\n\n"
+        f"[대화]\n{jesus_history}\n\n"
+        "'예' 또는 '아니오' 한 단어로만 답하라."
+    )
+    try:
+        out = llm.invoke(prompt)
+        text = (out.content if hasattr(out, "content") else str(out)).strip()
+        return text.startswith("예")
+    except Exception:
+        return user_turns >= 3  # LLM 실패 시 턴수 휴리스틱으로 폴백
+
+
+# ══════════════════════════════════════════════════════════════════════
 # [2] 응답 생성 단계
 # ══════════════════════════════════════════════════════════════════════
 def _hyde_expand(message: str) -> str:
@@ -182,8 +217,6 @@ def answer(
     try:
         llm = get_llm(temperature=settings.LLM_TEMPERATURE)
 
-        print("=== LLM CREATED ===")
-
         prompt = _persona_prompt(
             person=person,
             verses=verses,
@@ -194,19 +227,10 @@ def answer(
             shared_memory=shared_memory,
         )
 
-        print("=== PROMPT CREATED ===")
-
         out = llm.invoke(prompt)
-
-        print("=== LLM RESPONSE ===")
-        print(out)
-
         text = (out.content if hasattr(out, "content") else str(out)).strip()
 
-    except Exception as e:
-        print("=== LLM ERROR ===")
-        print(repr(e))
-
+    except Exception:
         emotion = infer_emotion(message)
         text = mock_data.mock_persona_answer(
             person,

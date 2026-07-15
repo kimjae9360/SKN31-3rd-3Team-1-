@@ -278,6 +278,8 @@ def build_graph_context(person: dict) -> str:
         parts.append(f"역할: {person['role']}")
     if person.get("traits"):
         parts.append(f"성향: {person['traits']}")
+    if person.get("speech_style"):
+        parts.append(f"말투: {person['speech_style']}")
     if person.get("quote"):
         ref = f" ({person['quote_ref']})" if person.get("quote_ref") else ""
         parts.append(f"상징 구절: \"{person['quote']}\"{ref}")

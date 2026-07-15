@@ -28,6 +28,7 @@
 """
 
 import base64
+import os
 import sys
 from pathlib import Path
 
@@ -39,15 +40,42 @@ ROOT = Path(__file__).parent
 BACKEND = ROOT / "backend"
 sys.path.insert(0, str(BACKEND))
 
+# Streamlit Cloud의 secrets(.streamlit/secrets.toml, 대시보드 Secrets 입력)를
+# 로컬 .env와 동일한 환경변수 경로로 흘려보낸다 (config.py는 os.environ만 봄).
+# 로컬에는 secrets.toml이 없는 게 정상이라 예외는 조용히 무시한다.
+try:
+    for _k, _v in st.secrets.items():
+        os.environ.setdefault(_k, str(_v))
+except Exception:
+    pass
+
 # .env 로드 (OPENAI_API_KEY 등). backend/.env 우선, 없으면 루트.
 load_dotenv(BACKEND / ".env")
 load_dotenv(ROOT / ".env")
 
 # ── 백엔드 서비스 직접 import (HTTP 없음) ─────────────────────────────
-from app.services import hybrid_rag, mock_data  # noqa: E402
+from app.core.config import settings  # noqa: E402
+from app.services import hybrid_rag, mock_data, vector_store  # noqa: E402
 from app.services.emotion import EMOTION_LABELS  # noqa: E402
 
 ASSETS = ROOT / "assets"
+
+# CWD와 무관하게 항상 이 파일 기준 절대경로를 쓰도록 강제 (배포 환경 안전장치)
+settings.CHROMA_DB_DIR = str(ROOT / "data" / "chroma_db")
+settings.BIBLE_FILE = str(ROOT / "data" / "bible_structured.json")
+
+
+@st.cache_resource(show_spinner="성경 말씀 인덱스를 준비하는 중입니다 (최초 실행 시 몇 분 걸릴 수 있어요)…")
+def _ensure_vector_store_ready() -> int:
+    """앱 프로세스당 최초 1회만 실행. chroma_db가 비어있으면(첫 배포/콜드스타트)
+    bible_structured.json으로부터 자동 재생성한다. 실패해도 앱은 mock 구절로 계속 동작."""
+    try:
+        return vector_store.ensure_vector_store()
+    except Exception:
+        return -1
+
+
+_ensure_vector_store_ready()
 
 # ══════════════════════════════════════════════════════════════════════
 #  디자인 토큰 (시안2: 에덴 정원 + Codapress 타이포)
@@ -155,6 +183,7 @@ def init_state():
     ss.setdefault("active", None)      # 대화 중인 제자 id
     ss.setdefault("seed", None)        # 홈에서 넘어온 첫 문장
     ss.setdefault("auth_open", False)
+    ss.setdefault("shared_memory", "")  # 예수님과 나눈 대화 요약 (제자에게 인계)
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -194,6 +223,7 @@ def header():
             if st.button("로그아웃", key="logout", use_container_width=True):
                 ss.user = None
                 ss.msgs, ss.active, ss.card = [], None, None
+                ss.shared_memory = ""
                 ss.page = "home"
                 st.rerun()
         else:
@@ -377,6 +407,21 @@ def profile_card(person: dict):
                 st.rerun()
 
 
+def _format_history(person_id: str, max_lines: int = 20) -> str:
+    """ss.msgs에서 이 화자(person_id)와 나눈 대화만 골라 LLM 프롬프트용 히스토리 문자열로 만든다.
+    사용자 메시지도 어느 대화 상대에게 한 말인지 person_id로 태그되어 있어야
+    다른 상대와의 대화가 섞여 들어가지 않는다. (전환 안내 멘트 등 meta 메시지는 제외)"""
+    ss = st.session_state
+    name = "예수님" if person_id == "jesus" else mock_data.PEOPLE.get(person_id, {}).get("name", person_id)
+    lines = []
+    for m in ss.msgs:
+        if m.get("meta") or m.get("person_id") != person_id:
+            continue
+        speaker = "사용자" if m["role"] == "user" else name
+        lines.append(f"{speaker}: {m['text']}")
+    return "\n".join(lines[-max_lines:])
+
+
 def _next_disciple():
     """추천 거절 → emo_weight 키워서 재추천 (기존 프론트 로직 동일)."""
     ss = st.session_state
@@ -385,7 +430,7 @@ def _next_disciple():
     card["idx"] += 1
     if card["pass"] >= 2:
         card["w"] = min(3.0, card["w"] + 0.8)
-        r = hybrid_rag.recommend(ss.user["mbti"], card["last_text"], card["w"])
+        r = hybrid_rag.recommend(ss.user["mbti"], card["jesus_summary"], card["w"])
         shown = {p["id"] for p in card["order"][: card["idx"]]}
         card["order"] = [p for p in r["ranked"] if p["id"] not in shown] + \
                         card["order"][: card["idx"]]
@@ -396,32 +441,37 @@ def _next_disciple():
 
 
 def _accept_disciple():
-    """제자 수락 → hybrid_rag.answer() 로 실제 LLM 응답."""
+    """제자 수락 → 예수님과 나눈 대화 요약을 shared_memory로 넘기고 hybrid_rag.answer() 로 실제 LLM 응답."""
     ss = st.session_state
     p = ss.card["order"][ss.card["idx"]]
     last = ss.card["last_text"]
+    ss.shared_memory = ss.card["jesus_summary"]
     ss.card = None
     ss.active = p["id"]
-    ss.msgs.append({"role": "bot", "person_id": "jesus",
+    ss.msgs.append({"role": "bot", "person_id": "jesus", "meta": True,
                     "text": f'그래, {p["name"]}와 마음을 나눠보거라. 나는 늘 곁에 있으마.'})
-    out = hybrid_rag.answer(p["id"], ss.user["mbti"], last)
+    with st.spinner("말씀을 찾는 중…"):
+        out = hybrid_rag.answer(p["id"], ss.user["mbti"], last,
+                                 user_name=ss.user["name"], shared_memory=ss.shared_memory)
     ss.msgs.append({"role": "bot", "person_id": p["id"],
-                    "text": out["answer"], "verses": out["verses"]})
+                    "text": out["answer"], "verses": out.get("verses")})
 
 
-def _first_turn(text: str):
-    """첫 발화 → 감정 추론 + Graph 궁합으로 제자 추천."""
+def _jesus_turn(text: str):
+    """예수님과의 자유 대화 한 턴. 대화가 충분히 깊어졌다고 판단되면 제자 추천 카드를 띄운다."""
     ss = st.session_state
-    ss.msgs.append({"role": "user", "text": text})
-    rec = hybrid_rag.recommend(ss.user["mbti"], text, 1.0)
-    top = rec["ranked"][0]
-    ss.msgs.append({
-        "role": "bot", "person_id": "jesus",
-        "text": f'내 아이야, 그 {rec["emotion_label"]}은(는) {top["name"]}가 '
-                f'잘 들어줄 수 있겠구나. 먼저 어떤 벗인지 보여주마.',
-    })
-    ss.card = {"order": rec["ranked"], "idx": 0, "pass": 0,
-               "w": 1.0, "last_text": text}
+    history = _format_history("jesus")  # 현재 발화를 append 하기 전에 만들어야 중복 안 됨
+    ss.msgs.append({"role": "user", "text": text, "person_id": "jesus"})
+    out = hybrid_rag.answer("jesus", ss.user["mbti"], text, history=history,
+                             user_name=ss.user["name"])
+    ss.msgs.append({"role": "bot", "person_id": "jesus",
+                    "text": out["answer"], "verses": out.get("verses")})
+
+    full_history = _format_history("jesus")
+    if hybrid_rag.should_recommend(full_history):
+        rec = hybrid_rag.recommend(ss.user["mbti"], full_history, 1.0)
+        ss.card = {"order": rec["ranked"], "idx": 0, "pass": 0, "w": 1.0,
+                   "last_text": text, "jesus_summary": full_history}
 
 
 def page_chat():
@@ -441,7 +491,7 @@ def page_chat():
     if ss.seed:
         seed, ss.seed = ss.seed, None
         with st.spinner("마음을 살피는 중…"):
-            _first_turn(seed)
+            _jesus_turn(seed)
         st.rerun()
 
     if not ss.msgs:
@@ -466,14 +516,16 @@ def page_chat():
     text = st.chat_input("마음에 있는 것을 적어보세요…")
     if text:
         if ss.active:
-            ss.msgs.append({"role": "user", "text": text})
+            history = _format_history(ss.active)  # 현재 발화를 append 하기 전에 만들어야 중복 안 됨
+            ss.msgs.append({"role": "user", "text": text, "person_id": ss.active})
             with st.spinner("말씀을 찾는 중…"):
-                out = hybrid_rag.answer(ss.active, ss.user["mbti"], text)
+                out = hybrid_rag.answer(ss.active, ss.user["mbti"], text, history=history,
+                                         user_name=ss.user["name"], shared_memory=ss.shared_memory)
             ss.msgs.append({"role": "bot", "person_id": ss.active,
-                            "text": out["answer"], "verses": out["verses"]})
+                            "text": out["answer"], "verses": out.get("verses")})
         else:
             with st.spinner("마음을 살피는 중…"):
-                _first_turn(text)
+                _jesus_turn(text)
         st.rerun()
 
 
@@ -491,7 +543,7 @@ def page_diagnose():
     mbti = st.selectbox("내 유형", mock_data.TYPE_ORDER,
                         index=mock_data.TYPE_ORDER.index(default))
 
-    ranked = mock_data.recommend_disciples(mbti, limit=3)
+    ranked = hybrid_rag.recommend(mbti, "", 0.0)["ranked"][:3]
     top = ranked[0]
 
     with st.container(border=True):
