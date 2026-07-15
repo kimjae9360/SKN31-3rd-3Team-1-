@@ -54,7 +54,7 @@ def recommend(req: RecommendRequest, authorization: str = Header(default=""),
         cards.append(DiscipleCard(
             id=r["id"], name=r["name"], mbti=r["mbti"], role=r.get("role"),
             traits=r.get("traits"), quote=r.get("quote"), quote_ref=r.get("quote_ref"),
-            books=r.get("books", []),
+            books=r.get("book_full_names") or r.get("books", []),
             best_mbti=mock_data.best_matching_mbti(r["mbti"]),
             compat=r.get("compat", 0), score=r.get("score", 0),
         ))

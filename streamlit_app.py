@@ -354,7 +354,7 @@ def profile_card(person: dict):
                 f'<b>성향</b> {person.get("traits","—")}<br>'
                 f'<b>잘 맞는 MBTI</b> '
                 f'{" · ".join(mock_data.best_matching_mbti(person["mbti"]))}<br>'
-                f'<b>연관 성경서</b> {" · ".join(person.get("books") or []) or "—"}</div>',
+                f'<b>연관 성경서</b> {" · ".join(person.get("book_full_names") or person.get("books") or []) or "—"}</div>',
                 unsafe_allow_html=True,
             )
         if person.get("quote"):
@@ -559,7 +559,7 @@ def page_explore():
                     st.write(f'**성향** {p.get("traits","—")}')
                     st.write(f'**잘 맞는 MBTI** '
                              f'{" · ".join(mock_data.best_matching_mbti(p["mbti"]))}')
-                    st.write(f'**연관 성경서** {" · ".join(p.get("books") or []) or "—"}')
+                    st.write(f'**연관 성경서** {" · ".join(p.get("book_full_names") or p.get("books") or []) or "—"}')
                     st.markdown(f'<div class="ed-quote">“{p.get("quote","")}”'
                                 f'<div style="font-size:11.5px;color:#8A9578;margin-top:6px">'
                                 f'— {p.get("quote_ref","")}</div></div>',

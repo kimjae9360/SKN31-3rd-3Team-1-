@@ -281,8 +281,9 @@ def build_graph_context(person: dict) -> str:
     if person.get("quote"):
         ref = f" ({person['quote_ref']})" if person.get("quote_ref") else ""
         parts.append(f"상징 구절: \"{person['quote']}\"{ref}")
-    if person.get("books"):
-        parts.append(f"연관 성경서: {', '.join(person['books'])}")
+    display_books = person.get("book_full_names") or person.get("books")
+    if display_books:
+        parts.append(f"연관 성경서: {', '.join(display_books)}")
     return " · ".join(parts) or "관련 정보 없음"
 
 
