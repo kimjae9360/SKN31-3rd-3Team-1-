@@ -345,6 +345,23 @@ def title_for(gender: str) -> str:
     return "자매님" if (gender or "").lower() in ("eve", "female", "f", "여", "여자") else "형제님"
 
 
+# 두 글자 성씨(복성). 이 경우 앞 두 글자를 성으로 떼어낸다.
+_COMPOUND_SURNAMES = {
+    "남궁", "황보", "제갈", "선우", "서문", "독고", "사공", "동방", "황목", "망절",
+}
+
+
+def given_name(name: str) -> str:
+    """예수님/제자가 이름을 부를 때 성을 떼고 이름만 자연스럽게 부르도록 변환.
+    ('김재원' → '재원') 한글이 아니거나 두 글자 미만이면(성을 뗄 수 없으면) 원본 그대로 둔다."""
+    name = (name or "").strip()
+    if len(name) < 2 or not all("가" <= c <= "힣" for c in name):
+        return name
+    if len(name) >= 3 and name[:2] in _COMPOUND_SURNAMES:
+        return name[2:]
+    return name[1:]
+
+
 def build_prompt(
     person: dict,
     user_mbti: str,
@@ -357,10 +374,13 @@ def build_prompt(
 ) -> str:
     """person_id에 따라 예수님/제자 프롬프트를 조립한다."""
     person_id = person.get("id", "")
+    # 예수님/제자가 부를 때 "김재원아"처럼 성까지 딱딱하게 부르지 않도록,
+    # 이름을 부르는 모든 프롬프트에서 성을 뗀 이름을 쓴다.
+    display_name = given_name(user_name) or user_name or "친구"
 
     if person_id == "jesus":
         return JESUS_SYSTEM_PROMPT.format(
-            user_name=user_name or "친구",
+            user_name=display_name,
             user_mbti=user_mbti,
             shared_memory=shared_memory or "(아직 없음)",
             context=context or "관련 구절 없음",
@@ -371,7 +391,7 @@ def build_prompt(
     # 제자들이 벡터 검색 결과를 못 보고 답했습니다. 이제 함께 전달합니다.
     common = DISCIPLE_SYSTEM_PROMPT_COMMON.format(
         disciple_name=person.get("name", person_id),
-        user_name=user_name or "친구",
+        user_name=display_name,
         user_title=title_for(gender),
         user_mbti=user_mbti,
         user_question=message,

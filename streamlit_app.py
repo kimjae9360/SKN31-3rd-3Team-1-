@@ -307,8 +307,8 @@ def header():
     with right:
         if ss.user:
             st.markdown(
-                f'<div style="text-align:right;font-size:12.5px;color:{MUTED};line-height:1.35">'
-                f'{ss.user["name"]} {ss.user["title"]}<br>'
+                f'<div style="text-align:right;font-size:13px;color:{MUTED};line-height:1.35;margin-bottom:6px">'
+                f'{ss.user["name"]} {ss.user["title"]} <span style="opacity:0.4;margin:0 4px">|</span> '
                 f'<b style="color:{ACCENT}">{ss.user["mbti"]}</b></div>',
                 unsafe_allow_html=True,
             )
