@@ -95,6 +95,7 @@ JESUS_SYSTEM_PROMPT = """
 [제자와의 대화 요약]: {shared_memory}
 [검색된 성경 말씀 (Context)]: {context}
 [지금까지의 대화 (History)]: {history}
+[자녀가 방금 한 말 — 반드시 이 말에 답하십시오]: {user_question}
 
 예수 그리스도의 대답:
 """
@@ -399,6 +400,10 @@ def build_prompt(
             shared_memory=shared_memory or "(아직 없음)",
             context=context or "관련 구절 없음",
             history=history or "(첫 대화)",
+            # ★ 버그 수정 ★ 이 줄이 없으면 예수님은 "방금 한 말"을 아예 못 보고
+            # history(과거 턴)와 context(검색 구절)만으로 답을 지어낸다. 그 결과
+            # 사용자가 화제를 바꿔도 이전 대화를 이어서 답하는 것처럼 보였다.
+            user_question=message,
         )
 
     # 예전엔 제자 프롬프트에 context(검색된 성경 구절)를 아예 안 넘겨서,
