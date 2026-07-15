@@ -3,7 +3,7 @@ app/services/graph_store.py
 ────────────────────────────────────────────────────────────────────────
 Neo4j Graph DB 서비스.
 
-실제 팀 스키마 (2026-07 확인):
+실제 팀 스키마 (2026-07, 라이브 Neo4j에 직접 접속해 확인):
   (:Disciple {id, name, title, speech_style})
   (:Jesus {name})
   (:MBTI {type})
@@ -19,10 +19,11 @@ Neo4j Graph DB 서비스.
   (Disciple)-[:BROTHER_OF]->(Disciple)
   (User)-[:MATCHED_WITH {matched_at}]->(Disciple)
 
-주의: MBTI 코드 간 궁합 관계(예 옛 설계의 MBTI_COMPATIBILITY)는 이 그래프에
-존재하지 않습니다. 궁합 순위는 (1) 사용자 MBTI와 직접 MATCHES 되는 제자를
-최우선으로, (2) 나머지는 제자 자신의 HAS_MBTI(1,2순위)와 사용자 MBTI의
-글자 일치도로 근사해 매깁니다.
+주의: Person/Book/MBTI_COMPATIBILITY/APPEAR 라벨은 예전 설계 문서에는
+있었지만 실제 그래프에는 존재하지 않습니다(라이브 DB 조회 시 "label does
+not exist" 경고). MBTI 코드 간 궁합 관계도 그래프에 없어, 궁합 순위는
+(1) 사용자 MBTI와 직접 MATCHES 되는 제자를 최우선으로, (2) 나머지는 제자
+자신의 HAS_MBTI(1,2순위)와 사용자 MBTI의 글자 일치도로 근사해 매깁니다.
 
 연결은 드라이버를 싱글턴으로 재사용합니다.
 """
