@@ -15,7 +15,16 @@ Eden 포털 백엔드 전역 설정.
 """
 
 from functools import lru_cache
+from pathlib import Path
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# ── 기준 경로 ──────────────────────────────────────────────────────────
+# CWD(실행 위치)에 의존하지 않도록 이 파일 기준 절대경로를 씁니다.
+# 실제 데이터 파일은 backend/data가 아니라 프로젝트 루트 data/ 에 있습니다
+# (streamlit_app.py, .gitignore, 배포 스크립트가 전부 이 위치를 기준으로 함).
+ROOT_DIR = Path(__file__).resolve().parents[3]         # .../SKN31-3rd-3Team - 복사본
+DATA_DIR = ROOT_DIR / "data"
 
 
 class Settings(BaseSettings):
@@ -52,10 +61,16 @@ class Settings(BaseSettings):
     # 3. Vector DB
     # ══════════════════════════════════════════════════════════════════
     VECTOR_BACKEND: str = "chroma"          # "chroma" | "faiss" | "qdrant"
-    CHROMA_DB_DIR: str = "./data/chroma_db"
-    BIBLE_FILE: str = "./data/bible_structured.json"
-    RETRIEVAL_K: int = 4                     # 최종 LLM에 넣을 구절 수
+    CHROMA_DB_DIR: str = str(DATA_DIR / "chroma_db")
+    CHROMA_COLLECTION: str = "langchain"     # langchain_chroma 기본 컬렉션명 (안 정하면 빈 컬렉션이 새로 생김)
+    BIBLE_FILE: str = str(DATA_DIR / "bible_structured.json")
+    RETRIEVAL_K: int = 5                     # LLM 컨텍스트로 넣을 구절 수
     RETRIEVAL_FETCH_K: int = 20              # rerank 전 1차로 넉넉히 가져올 수
+
+    # 화면에는 LLM이 "가장 중요하게 참고한" 구절 1개만 붙인다 (hybrid_rag._split_key_verse)
+    SHOW_VERSE_COUNT: int = 1
+    # 검색 결과가 없을 때 목업 구절을 지어내지 않는다 (조용히 틀린 구절이 붙는 것 방지)
+    ALLOW_MOCK_VERSES: bool = False
 
     # Qdrant (VECTOR_BACKEND="qdrant"일 때만 사용)
     QDRANT_URL: str = "http://localhost:6333"
@@ -85,6 +100,7 @@ class Settings(BaseSettings):
     # ══════════════════════════════════════════════════════════════════
     # 6. 인증 (데모용 간이 JWT)
     # ══════════════════════════════════════════════════════════════════
+    USER_STORE_PATH: str = str(DATA_DIR / "users.json")
     JWT_SECRET: str = "eden-demo-secret-change-me"
     JWT_ALGORITHM: str = "HS256"
     JWT_EXPIRE_MINUTES: int = 60 * 24 * 7    # 7일

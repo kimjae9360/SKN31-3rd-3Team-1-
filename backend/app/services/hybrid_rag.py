@@ -27,6 +27,8 @@ app/services/hybrid_rag.py
 순수하게 서비스 함수만 노출합니다(사이드이펙트 최소화).
 """
 
+import re
+
 from app.core.config import settings
 from app.services import graph_store, vector_store, prompts
 from app.services.emotion import infer_emotion, EMOTION_LABELS
@@ -166,6 +168,7 @@ def _persona_prompt(
     history: str,
     user_name: str = "",
     shared_memory: str = "",
+    gender: str = "adam",
 ) -> str:
     """예수님/제자 페르소나 + 검색 구절 + 대화기록을 담은 최종 프롬프트."""
     context = "\n".join(f"- {v['source']} {v['content']}" for v in verses) or "관련 구절 없음"
@@ -177,7 +180,46 @@ def _persona_prompt(
         context=context,
         user_name=user_name,
         shared_memory=shared_memory,
+        gender=gender,
     )
+
+
+# ── 핵심 구절 1개 추출 ─────────────────────────────────────────────────
+# LLM이 답변 끝에 남기는 "[핵심구절: 마태복음 11:28]" 표시를 읽어,
+# 검색된 여러 구절 중 '이번 답변에서 실제로 가장 중요하게 쓴 1개'만 화면에 붙입니다.
+_KEY_RE = re.compile(r"\[\s*핵심\s*구절\s*[:：]\s*([^\]]*)\]")
+
+
+def _split_key_verse(text: str, verses: list[dict]) -> tuple[str, list[dict]]:
+    """LLM 출력에서 핵심구절 표시를 떼어내고, 그 구절 1개만 골라 돌려준다."""
+    matches = _KEY_RE.findall(text or "")
+    body = _KEY_RE.sub("", text or "").strip()
+
+    if not verses:
+        return body, []
+
+    if not matches:
+        # LLM이 표시를 빼먹은 경우 → 검색 1순위 구절로 폴백 (구절이 사라지지 않게)
+        return body, verses[: settings.SHOW_VERSE_COUNT]
+
+    ref = matches[-1].strip()
+    if ref in ("", "없음", "None", "-"):
+        # 이번 턴은 말씀 없이 들어주기만 한 경우 → 구절을 붙이지 않음
+        return body, []
+
+    def norm(x: str) -> str:
+        return re.sub(r"\s+", "", (x or "")).replace("장", ":").replace("절", "")
+
+    target = norm(ref)
+    # 1) 출처 완전/부분 일치
+    for v in verses:
+        if norm(v["source"]) == target:
+            return body, [v]
+    for v in verses:
+        if target and (target in norm(v["source"]) or norm(v["source"]) in target):
+            return body, [v]
+    # 2) 못 찾으면 검색 1순위(가장 유사한 구절)로 폴백
+    return body, verses[: settings.SHOW_VERSE_COUNT]
 
 
 def answer(
@@ -187,10 +229,16 @@ def answer(
     history: str = "",
     user_name: str = "",
     shared_memory: str = "",
+    gender: str = "adam",
 ) -> dict:
     """
     선택된 제자(person_id)가 사용자 발화에 응답.
-    반환: {person, verses, answer}
+    반환: {person, verses, answer, verse_source}
+
+    · verses 는 '이번 답변에서 LLM이 가장 중요하게 삼은 구절 1개'만 담습니다.
+      (config.SHOW_VERSE_COUNT)
+    · config.ALLOW_MOCK_VERSES=False(기본)이면 검색 결과가 없을 때 구절을
+      지어내지 않고 빈 리스트를 돌려줍니다.
     각 단계는 실제 서비스 → 실패 시 목업 순으로 폴백합니다.
     """
     from app.services import mock_data
@@ -204,14 +252,18 @@ def answer(
         person = mock_data.PEOPLE.get(person_id, {"id": person_id, "name": person_id})
     books = person.get("books") or None
 
-    # 2) 성경 구절 (Vector → 목업)
+    # 2) 성경 구절 (Vector → 목업/빈 값)
+    verse_source = "search"
     try:
         verses = retrieve_verses(message, books)
-        if not verses:
-            raise RuntimeError("no verses")
     except Exception:
-        emotion = infer_emotion(message)
-        verses = mock_data.mock_verses(emotion)
+        verses = []
+    if not verses:
+        if settings.ALLOW_MOCK_VERSES:
+            verses = mock_data.mock_verses(infer_emotion(message))
+            verse_source = "mock"
+        else:
+            verse_source = "none"
 
     # 3) 응답 생성 (LLM → 목업 페르소나)
     try:
@@ -225,6 +277,7 @@ def answer(
             history=history,
             user_name=user_name,
             shared_memory=shared_memory,
+            gender=gender,
         )
 
         out = llm.invoke(prompt)
@@ -237,8 +290,10 @@ def answer(
             EMOTION_LABELS[emotion],
             message
         )
+        return {"person": person, "verses": verses[: settings.SHOW_VERSE_COUNT],
+                "answer": text, "verse_source": verse_source}
 
-        return {"person": person, "verses": verses, "answer": text}
-
-    # LLM 성공 경로: try 블록이 정상 종료되면 여기로 도달
-    return {"person": person, "verses": verses, "answer": text}
+    # 4) 답변 끝의 [핵심구절: ...] 표시를 떼고, 그 구절 1개만 화면용으로 남김
+    text, key_verses = _split_key_verse(text, verses)
+    return {"person": person, "verses": key_verses,
+            "answer": text, "verse_source": verse_source}

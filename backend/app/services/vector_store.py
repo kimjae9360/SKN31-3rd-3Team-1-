@@ -22,6 +22,7 @@ from functools import lru_cache
 
 from app.core.config import settings
 from app.services.embeddings import get_embeddings
+from app.services.bible_books import normalize_books
 # 참고: langchain_core / langchain_chroma 등은 각 함수 안에서 지연 import 합니다.
 #       (라이브러리 미설치 환경에서도 앱이 로드되고, 상위에서 목업 폴백 가능)
 
@@ -39,7 +40,10 @@ def clean_text(text: str) -> str:
 # ── 백엔드별 store 로더/빌더 ────────────────────────────────────────────
 def _load_chroma():
     from langchain_chroma import Chroma
+    # collection_name 명시 — 빼먹으면 langchain 기본값으로 "빈 컬렉션"을 새로
+    # 만들어버려서, 인덱스가 있어도 검색 결과가 0건으로 나온다.
     return Chroma(
+        collection_name=settings.CHROMA_COLLECTION,
         persist_directory=settings.CHROMA_DB_DIR,
         embedding_function=get_embeddings(),
     )
@@ -113,13 +117,55 @@ def build_vector_store(batch_size: int = 500):
     return len(documents)
 
 
-def vector_store_is_empty() -> bool:
-    """저장된 chroma_db가 없거나 구절이 0개인지 확인 (자동 재생성 트리거 조건)."""
+def count() -> int:
+    """인덱싱된 구절 수. 백엔드별로 카운트 방법이 다르다."""
     try:
         store = get_vector_store()
-        return store._collection.count() == 0
+        backend = settings.VECTOR_BACKEND.lower()
+        if backend == "qdrant":
+            return store.client.count(collection_name=store.collection_name).count
+        return store._collection.count()
     except Exception:
-        return True
+        return 0
+
+
+def health() -> dict:
+    """
+    상태 점검용. '왜 구절이 안 나오는지' DB 문제와 임베딩(API 키) 문제를
+    구분해서 화면/CLI에 바로 보여준다 — 둘 다 "구절 0건"으로만 보이면
+    원인을 못 찾고 헤매기 쉽다.
+    """
+    backend = settings.VECTOR_BACKEND.lower()
+    n, db_error = 0, None
+    try:
+        n = count()
+    except Exception as e:
+        db_error = repr(e)
+
+    embedding_ok, embedding_error = True, None
+    try:
+        get_embeddings().embed_query("ping")
+    except Exception as e:
+        embedding_ok = False
+        embedding_error = repr(e)
+
+    return {
+        "backend": backend,
+        "location": settings.QDRANT_URL if backend == "qdrant" else settings.CHROMA_DB_DIR,
+        "collection": settings.QDRANT_COLLECTION if backend == "qdrant" else settings.CHROMA_COLLECTION,
+        "count": n,
+        "db_ok": db_error is None and n > 0,
+        "db_error": db_error,
+        "embedding": f"{settings.EMBEDDING_PROVIDER}:{settings.EMBEDDING_MODEL}",
+        "embedding_ok": embedding_ok,
+        "embedding_error": embedding_error,
+        "ready": db_error is None and n > 0 and embedding_ok,
+    }
+
+
+def vector_store_is_empty() -> bool:
+    """저장된 chroma_db가 없거나 구절이 0개인지 확인 (자동 재생성 트리거 조건)."""
+    return count() == 0
 
 
 def ensure_vector_store() -> int:
@@ -143,15 +189,26 @@ def ensure_vector_store() -> int:
 
 
 def _build_filter(books: list[str]):
-    """graph-guided book 필터를 백엔드별 문법으로 변환."""
+    """graph-guided book 필터를 백엔드별 문법으로 변환.
+
+    books는 mock_data 등에서 온 값이라 전체 이름/약어가 섞여 들어올 수 있다.
+    normalize_books()로 인덱스가 실제로 쓰는 표기(약어)로 맞춰 준다 — 안 맞으면
+    필터가 0건이 되어 구절이 통째로 사라진다(조용한 실패라 찾기 어려움).
+    """
+    norm = normalize_books(books) or books
     backend = settings.VECTOR_BACKEND.lower()
     if backend == "qdrant":
         from qdrant_client import models
         return models.Filter(
-            must=[models.FieldCondition(key="metadata.book", match=models.MatchAny(any=books))]
+            must=[models.FieldCondition(key="metadata.book", match=models.MatchAny(any=norm))]
         )
     # chroma metadata 필터 문법
-    return {"book": {"$in": books}} if len(books) > 1 else {"book": books[0]}
+    return {"book": {"$in": norm}} if len(norm) > 1 else {"book": norm[0]}
+
+
+def _strip_source_prefix(text: str) -> str:
+    """"[마태복음 11:28] 수고하고..." 형태에서 본문만 떼어냄."""
+    return re.sub(r"^\s*\[[^\]]+\]\s*", "", text or "").strip()
 
 
 def search(query: str, k: int | None = None, books: list[str] | None = None):
@@ -177,13 +234,20 @@ def search(query: str, k: int | None = None, books: list[str] | None = None):
     if not docs and flt is not None:
         docs = store.similarity_search(query, k=k)
 
-    return [
-        {
-            "book": d.metadata["book"],
-            "chapter": d.metadata["chapter"],
-            "verse": d.metadata["verse"],
-            "content": d.metadata["content"],
-            "source": f"{d.metadata['book']} {d.metadata['chapter']}:{d.metadata['verse']}",
-        }
-        for d in docs
-    ]
+    out = []
+    for d in docs:
+        m = d.metadata or {}
+        book = m.get("book", "")
+        chapter = m.get("chapter", "")
+        verse = m.get("verse", "")
+        # 인덱스 스키마가 달라 metadata["content"]가 없어도(page_content만 있어도)
+        # 화면이 깨지지 않도록 폴백을 둔다.
+        content = m.get("content") or _strip_source_prefix(d.page_content)
+        out.append({
+            "book": book,
+            "chapter": chapter,
+            "verse": verse,
+            "content": content,
+            "source": m.get("source") or f"{book} {chapter}:{verse}".strip(),
+        })
+    return out

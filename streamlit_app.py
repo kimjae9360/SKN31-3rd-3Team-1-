@@ -18,10 +18,10 @@
         └─▶ llm.get_llm() + prompts           LLM: 제자 페르소나로 답변
                  └─ 실패 시 mock 페르소나 폴백
 
- [FastAPI 대비 달라진 점]
-   · HTTP 계층(api/*_router.py)만 제거 → hybrid_rag를 직접 import
-   · React 상태 → st.session_state
-   · services/ 이하 백엔드 로직은 단 한 줄도 수정하지 않음
+ [대화 흐름]
+   예수님과 자유롭게 몇 턴 대화 → LLM이 "추천해도 될 만큼 깊어졌는지" 판단
+   → 제자 추천 카드 → 수락하면 예수님과 나눈 대화 요약을 들고 제자에게 인계.
+   각 상대(예수님/제자)와의 대화는 서로 섞이지 않도록 완전히 분리해 기록한다.
 
  실행:  streamlit run streamlit_app.py
 ════════════════════════════════════════════════════════════════════════
@@ -54,15 +54,12 @@ load_dotenv(BACKEND / ".env")
 load_dotenv(ROOT / ".env")
 
 # ── 백엔드 서비스 직접 import (HTTP 없음) ─────────────────────────────
-from app.core.config import settings  # noqa: E402
-from app.services import hybrid_rag, mock_data, vector_store  # noqa: E402
-from app.services.emotion import EMOTION_LABELS  # noqa: E402
+from app.services import auth, hybrid_rag, mock_data, vector_store  # noqa: E402
 
 ASSETS = ROOT / "assets"
 
-# CWD와 무관하게 항상 이 파일 기준 절대경로를 쓰도록 강제 (배포 환경 안전장치)
-settings.CHROMA_DB_DIR = str(ROOT / "data" / "chroma_db")
-settings.BIBLE_FILE = str(ROOT / "data" / "bible_structured.json")
+# 홈 중앙 멘트 (마태복음 11:28)
+HOME_VERSE = "수고하고 무거운 짐 진 자들아 다 내게로 오라 내가 너희를 쉬게 하리라."
 
 
 @st.cache_resource(show_spinner="성경 말씀 인덱스를 준비하는 중입니다 (최초 실행 시 몇 분 걸릴 수 있어요)…")
@@ -115,13 +112,20 @@ def inject_css():
                 url("data:image/webp;base64,{bg}") center/cover fixed no-repeat;
   }}
   #MainMenu, footer, header {{ visibility: hidden; }}
-  .block-container {{ padding-top: 2.2rem; max-width: 880px; }}
+
+  /* 배경은 와이드인데 본문만 좁게 몰려 있으면 모바일처럼 보인다.
+     화면 폭에 맞춰 넓게 쓰되, 초광폭 모니터에서 글줄이 너무 길어지지 않게 상한만 둔다. */
+  .block-container {{
+    padding-top: 1.6rem; padding-bottom: 3rem;
+    max-width: 1360px; width: 100%;
+    padding-left: clamp(16px, 4vw, 56px); padding-right: clamp(16px, 4vw, 56px);
+  }}
 
   html, body, [class*="css"] {{ font-family: Inter, 'Noto Serif KR', sans-serif; }}
 
   .ed-display {{
     font-family: Cormorant, serif; font-weight: 600;
-    font-size: clamp(34px, 5.4vw, 60px); line-height: 1.06;
+    font-size: clamp(30px, 3.6vw, 52px); line-height: 1.14;
     letter-spacing: -.02em; color: {INK}; margin: 0 0 14px;
     text-shadow: 0 1px 16px rgba(255,252,240,.7);
   }}
@@ -132,6 +136,19 @@ def inject_css():
   }}
   .ed-sub {{ font-size: 15.5px; line-height: 1.6; color: {MUTED}; margin-bottom: 26px; }}
 
+  /* 홈 히어로: 중앙 멘트 + 바로 아래 채팅바 */
+  .ed-hero {{ max-width: 900px; margin: clamp(18px, 5vh, 64px) auto 0; text-align: center; }}
+  .ed-hero-verse {{
+    font-family: Cormorant, serif; font-weight: 600; color: {INK};
+    font-size: clamp(26px, 3.2vw, 44px); line-height: 1.3; letter-spacing: -.01em;
+    margin: 0 0 10px; text-shadow: 0 1px 16px rgba(255,252,240,.75);
+    word-break: keep-all;                 /* 한글 단어 중간에서 안 끊기게 */
+  }}
+  .ed-hero-ref {{
+    font-size: 12px; font-weight: 600; letter-spacing: .18em;
+    color: {ACCENT}; margin-bottom: 26px;
+  }}
+
   .ed-card {{
     background: {CARD}; border: 1px solid {LINE}; border-radius: 18px;
     padding: 18px 20px; margin-bottom: 12px;
@@ -140,11 +157,27 @@ def inject_css():
     border-left: 3px solid {ACCENT}; background: #F6F8EF;
     border-radius: 0 10px 10px 0; padding: 12px 16px;
     font-family: Cormorant, serif; font-size: 17px; line-height: 1.5; color: {INK};
+    overflow-wrap: anywhere; word-break: break-word;
   }}
+
+  /* 답변 밑에 붙는 핵심 구절. 폭 제한/줄바꿈 규칙이 없으면 긴 구절이
+     말풍선을 뚫고 나가 깨진다 — 명시적으로 막는다. */
   .ed-verse {{
-    border-left: 2px solid {ACCENT}; padding-left: 9px; margin: 4px 0;
-    font-size: 12px; color: #8A9578; line-height: 1.45;
+    display: block; box-sizing: border-box;
+    max-width: 100%; width: 100%;
+    margin: 10px 0 2px; padding: 10px 12px;
+    border: 1px solid {LINE}; border-left: 3px solid {ACCENT};
+    border-radius: 0 10px 10px 0; background: #F6F8EF;
+    font-size: 13px; line-height: 1.65; color: #56634A;
+    white-space: normal;
+    overflow-wrap: anywhere;      /* 긴 단어/URL 도 강제 줄바꿈 */
+    word-break: break-word;
   }}
+  .ed-verse .ref {{
+    display: block; font-size: 11px; font-weight: 700; letter-spacing: .06em;
+    color: {ACCENT}; margin-bottom: 3px;
+  }}
+
   .ed-badge {{
     display: inline-block; font-size: 11.5px; font-weight: 700; color: {ACCENT};
     background: #EAF0DE; padding: 2px 9px; border-radius: 20px;
@@ -152,18 +185,66 @@ def inject_css():
   .ed-name {{ font-family: Cormorant, serif; font-size: 22px; font-weight: 700; color: {INK}; }}
   .ed-role {{ font-size: 12.5px; color: {MUTED}; }}
 
-  /* 버튼: 올리브 톤 */
+  /* 버튼 기본: 올리브 톤 */
   .stButton > button {{
     border-radius: 100px; border: 1px solid {LINE}; background: {CARD};
     color: {MUTED}; font-weight: 600; font-size: 13.5px; padding: 8px 18px;
   }}
   .stButton > button:hover {{ border-color: {ACCENT}; color: {ACCENT}; }}
-  .stButton > button[kind="primary"] {{
-    background: {DEEP}; color: #F5F7EC; border: none;
+  .stButton > button[kind="primary"] {{ background: {DEEP}; color: #F5F7EC; border: none; }}
+
+  /* ── 헤더 ─────────────────────────────────────────────────────────
+     로고 자체가 홈 버튼이다(별도 '홈' 탭 없음).
+     st.button(key="logo_home") → 래퍼 div 에 .st-key-logo_home 클래스가 붙는다. */
+  .st-key-logo_home button {{
+    background: transparent !important; border: none !important; box-shadow: none !important;
+    padding: 0 !important; height: 46px !important;
+    font-family: Cormorant, serif !important; font-size: 30px !important;
+    font-weight: 700 !important; color: {INK} !important;
+    justify-content: flex-start !important; letter-spacing: -.01em;
   }}
+  .st-key-logo_home button:hover {{ color: {ACCENT} !important; }}
+
+  /* 메뉴 탭 사이즈 통일 + 글자 밀림 방지.
+     모든 nav 버튼 높이/폰트를 고정하고 줄바꿈을 막아 한 줄로 크게 쓴다. */
+  [class*="st-key-nav_"] button {{
+    height: 46px !important; min-height: 46px !important;
+    padding: 0 20px !important;
+    font-size: 15px !important; font-weight: 600 !important;
+    white-space: nowrap !important;      /* '말씀 상담' 이 두 줄로 밀리지 않게 */
+    letter-spacing: -.01em;
+    border-radius: 12px !important;
+    border: 1px solid transparent !important;
+    background: transparent !important;
+    color: {MUTED} !important;
+    transition: background .15s ease, color .15s ease;
+  }}
+  [class*="st-key-nav_"] button:hover {{
+    background: rgba(255,254,251,.75) !important; color: {INK} !important;
+  }}
+  [class*="st-key-nav_"] button[kind="primary"] {{
+    background: {CARD} !important; color: {DEEP} !important;
+    border: 1px solid {LINE} !important;
+    box-shadow: 0 1px 3px rgba(34,48,28,.06) !important;
+  }}
+  .st-key-auth_btn button, .st-key-logout button {{ height: 46px !important; }}
+
+  /* 홈 프롬프트 칩: 채팅바 아래 (GPT/Claude 스타일) */
+  [class*="st-key-chip_"] button {{
+    height: 40px !important; border-radius: 100px !important;
+    background: rgba(255,254,251,.8) !important;
+    font-size: 13.5px !important; white-space: nowrap !important;
+  }}
+
   [data-testid="stChatMessage"] {{
     background: rgba(255,255,252,.86); border: 1px solid {LINE};
-    border-radius: 16px; padding: 4px 10px;
+    border-radius: 16px; padding: 6px 12px;
+  }}
+  /* 말풍선 안 콘텐츠가 밖으로 새지 않도록 */
+  [data-testid="stChatMessage"] * {{ overflow-wrap: anywhere; }}
+
+  [data-testid="stChatInput"] {{
+    border-radius: 16px; border: 1px solid {LINE}; background: {CARD};
   }}
 </style>
 """,
@@ -176,7 +257,7 @@ def inject_css():
 # ══════════════════════════════════════════════════════════════════════
 def init_state():
     ss = st.session_state
-    ss.setdefault("user", None)        # {name, gender, mbti}
+    ss.setdefault("user", None)        # {email, name, gender, mbti, title}
     ss.setdefault("page", "home")      # home|chat|diagnose|explore|graph
     ss.setdefault("msgs", [])          # [{role, person_id, text, verses}]
     ss.setdefault("card", None)        # 추천 프로필 카드 상태
@@ -186,48 +267,49 @@ def init_state():
     ss.setdefault("shared_memory", "")  # 예수님과 나눈 대화 요약 (제자에게 인계)
 
 
+def go(page: str):
+    st.session_state.page = page
+    st.rerun()
+
+
 # ══════════════════════════════════════════════════════════════════════
-#  헤더 (좌 로고 / 중앙 메뉴 / 우 로그인)
+#  헤더 (로고=홈 / 메뉴 / 로그인)
 # ══════════════════════════════════════════════════════════════════════
-NAV = [("home", "홈"), ("chat", "말씀 상담"), ("diagnose", "제자 진단"),
+NAV = [("chat", "말씀 상담"), ("diagnose", "제자 진단"),
        ("explore", "인물 탐색"), ("graph", "관계도")]
 
 
 def header():
     ss = st.session_state
-    left, mid, right = st.columns([1.1, 3.4, 1.5])
+    left, mid, right = st.columns([1.0, 3.6, 1.4], vertical_alignment="center")
 
     with left:
-        st.markdown(
-            f'<div style="font-family:Cormorant,serif;font-size:26px;font-weight:700;'
-            f'color:{INK};padding-top:4px">✝ Eden</div>',
-            unsafe_allow_html=True,
-        )
+        if st.button("✝ Eden", key="logo_home", help="홈으로"):
+            go("home")
 
     with mid:
-        cols = st.columns(len(NAV))
+        cols = st.columns(len(NAV))          # 균등 분할 → 탭 폭 동일
         for c, (key, label) in zip(cols, NAV):
             with c:
                 if st.button(label, key=f"nav_{key}", use_container_width=True,
                              type="primary" if ss.page == key else "secondary"):
-                    ss.page = key
-                    st.rerun()
+                    go(key)
 
     with right:
         if ss.user:
             st.markdown(
-                f'<div style="text-align:right;font-size:12.5px;color:{MUTED};padding-top:8px">'
-                f'{ss.user["name"]} · <b style="color:{ACCENT}">{ss.user["mbti"]}</b></div>',
+                f'<div style="text-align:right;font-size:12.5px;color:{MUTED};line-height:1.35">'
+                f'{ss.user["name"]} {ss.user["title"]}<br>'
+                f'<b style="color:{ACCENT}">{ss.user["mbti"]}</b></div>',
                 unsafe_allow_html=True,
             )
             if st.button("로그아웃", key="logout", use_container_width=True):
                 ss.user = None
-                ss.msgs, ss.active, ss.card = [], None, None
+                ss.msgs, ss.active, ss.card, ss.seed = [], None, None, None
                 ss.shared_memory = ""
-                ss.page = "home"
-                st.rerun()
+                go("home")
         else:
-            if st.button("로그인 · 회원가입", key="open_auth",
+            if st.button("로그인 · 회원가입", key="auth_btn",
                          type="primary", use_container_width=True):
                 ss.auth_open = True
                 st.rerun()
@@ -246,6 +328,16 @@ QUIZ = [
     ("계획대로보다 즉흥적으로 움직이는 게 편한가요?", "P", "J"),
 ]
 
+UNKNOWN = "모름 (간단 테스트로 찾기)"
+
+
+def _login_user(profile: dict):
+    ss = st.session_state
+    ss.user = profile
+    ss.auth_open = False
+    if ss.seed:
+        ss.page = "chat"
+
 
 @st.dialog("에덴에 오신 걸 환영합니다")
 def auth_dialog():
@@ -253,42 +345,67 @@ def auth_dialog():
     ss = st.session_state
     tab_signup, tab_login = st.tabs(["회원가입", "로그인"])
 
+    # ── 회원가입 ──────────────────────────────────────────────────────
     with tab_signup:
-        name = st.text_input("이름", key="su_name")
-        gender = st.radio("당신은", ["아담의 후손 ♂", "하와의 후손 ♀"],
-                          horizontal=True, key="su_gender")
-        mode = st.radio("MBTI", ["4문항 검사", "직접 선택"],
-                        horizontal=True, key="su_mode")
+        # MBTI 선택은 값에 따라 화면이 즉시 바뀌어야 하므로 form 밖에 둔다
+        # (form 안에서는 제출 전까지 rerun이 일어나지 않는다).
+        mbti_pick = st.selectbox(
+            "MBTI", list(mock_data.TYPE_ORDER) + [UNKNOWN],
+            index=len(mock_data.TYPE_ORDER),      # 기본값 = 모름
+            key="su_mbti_pick",
+        )
 
-        if mode == "직접 선택":
-            mbti = st.selectbox("유형", mock_data.TYPE_ORDER, key="su_direct")
-        else:
+        mbti = mbti_pick
+        if mbti_pick == UNKNOWN:
+            st.caption("4문항이면 충분해요. 편하게 고르시면 됩니다.")
             letters = []
             for i, (q, yes, no) in enumerate(QUIZ):
                 a = st.radio(f"{i+1}. {q}", ["그렇다", "아니다"],
                              horizontal=True, key=f"su_q{i}")
                 letters.append(yes if a == "그렇다" else no)
             mbti = "".join(letters)
-            st.caption(f"예상 유형: **{mbti}**")
+            st.markdown(f'<span class="ed-badge">예상 유형 · {mbti}</span>',
+                        unsafe_allow_html=True)
+            st.write("")
 
-        if st.button("가입하고 에덴 들어가기", type="primary",
-                     use_container_width=True, disabled=not name):
-            ss.user = {"name": name,
-                       "gender": "adam" if "아담" in gender else "eve",
-                       "mbti": mbti}
-            ss.auth_open = False
-            if ss.seed:
-                ss.page = "chat"
-            st.rerun()
+        with st.form("signup_form", clear_on_submit=False):
+            name = st.text_input("이름")
+            email = st.text_input("이메일")
+            pw = st.text_input("비밀번호", type="password")
+            gender = st.radio("당신은", ["아담의 후손 ♂", "하와의 후손 ♀"], horizontal=True)
+            submitted = st.form_submit_button("가입하고 에덴 들어가기",
+                                              type="primary", use_container_width=True)
 
+        if submitted:
+            if not name.strip():
+                st.error("이름을 입력해 주세요.")
+            else:
+                try:
+                    profile = auth.signup(
+                        email=email, password=pw, name=name.strip(),
+                        gender="adam" if "아담" in gender else "eve",
+                        mbti=mbti,
+                    )
+                    _login_user(profile)
+                    st.rerun()
+                except ValueError as e:
+                    st.error(str(e))
+
+    # ── 로그인 ────────────────────────────────────────────────────────
     with tab_login:
-        st.text_input("이메일", key="li_email")
-        st.text_input("비밀번호", type="password", key="li_pw")
-        st.caption("프로토타입에서는 아무 값으로 로그인됩니다.")
-        if st.button("로그인", use_container_width=True):
-            ss.user = {"name": "손님", "gender": "adam", "mbti": "INFP"}
-            ss.auth_open = False
-            st.rerun()
+        # st.form 안에서는 입력창에서 Enter를 치면 폼이 제출된다.
+        with st.form("login_form", clear_on_submit=False):
+            email = st.text_input("이메일")
+            pw = st.text_input("비밀번호", type="password")
+            st.caption("입력 후 Enter로도 로그인됩니다.")
+            submitted = st.form_submit_button("로그인", type="primary",
+                                              use_container_width=True)
+        if submitted:
+            try:
+                _login_user(auth.login(email, pw))
+                st.rerun()
+            except ValueError as e:
+                st.error(str(e))
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -303,35 +420,42 @@ CHIPS = [
 
 def page_home():
     ss = st.session_state
-    st.markdown('<div class="ed-eyebrow">Eden · 말씀 상담</div>', unsafe_allow_html=True)
+
     st.markdown(
-        '<h1 class="ed-display">마음의 짐을,<br><em>말씀</em>으로 나누다</h1>',
-        unsafe_allow_html=True,
-    )
-    greet = f"나의 {ss.user['name']}아, 오늘의 마음을 적어보렴. " if ss.user else "오늘의 고민을 적어보세요. "
-    st.markdown(
-        f'<div class="ed-sub">{greet}당신과 어울리는 제자가 성경으로 답합니다.</div>',
+        f'<div class="ed-hero">'
+        f'<div class="ed-hero-verse">{HOME_VERSE}</div>'
+        f'<div class="ed-hero-ref">마태복음 11:28</div>'
+        f'</div>',
         unsafe_allow_html=True,
     )
 
-    text = st.chat_input("요즘 마음이 어떤가요…")
+    text = None
+    _, mid, _ = st.columns([1, 3.2, 1])
+    with mid:
+        # st.chat_input을 컨테이너 안에서 호출하면 화면 하단 고정이 아니라
+        # '그 자리에' 인라인으로 렌더링된다 → 중앙 멘트 바로 밑에 놓을 수 있다.
+        with st.container():
+            typed = st.chat_input(
+                f"{ss.user['name']} {ss.user['title']}, 오늘의 마음을 적어보세요…"
+                if ss.user else "마음에 있는 것을 적어보세요…"
+            )
+        if typed:
+            text = typed
 
-    st.write("")
-    cols = st.columns(4)
-    for c, (label, seed) in zip(cols, CHIPS):
-        with c:
-            if st.button(f"{label} →", key=f"chip_{label}", use_container_width=True):
-                text = seed
-    with cols[3]:
-        if st.button("제자 진단 →", key="chip_diag", use_container_width=True):
-            ss.page = "diagnose"
-            st.rerun()
+        st.write("")
+        cols = st.columns(4)
+        for c, (label, seed) in zip(cols, CHIPS):
+            with c:
+                if st.button(label, key=f"chip_{label}", use_container_width=True):
+                    text = seed
+        with cols[3]:
+            if st.button("제자 진단", key="chip_diag", use_container_width=True):
+                go("diagnose")
 
     if text:
         ss.seed = text
         if not ss.user:
-            # 비로그인 → 회원가입 유도 (상담은 회원 전용)
-            ss.auth_open = True
+            ss.auth_open = True      # 비로그인 → 회원가입 유도 (상담은 회원 전용)
         else:
             ss.page = "chat"
         st.rerun()
@@ -353,9 +477,11 @@ def render_msg(m: dict):
             unsafe_allow_html=True,
         )
         st.write(m["text"])
-        for v in m.get("verses") or []:
+        # hybrid_rag가 이미 '이번 답변에서 가장 중요하게 쓴 구절' 1개로 줄여 준다.
+        for v in (m.get("verses") or [])[:1]:
             st.markdown(
-                f'<div class="ed-verse"><b>{v["source"]}</b> {v["content"]}</div>',
+                f'<div class="ed-verse"><span class="ref">{v["source"]}</span>'
+                f'{v["content"]}</div>',
                 unsafe_allow_html=True,
             )
 
@@ -368,10 +494,8 @@ def profile_card(person: dict):
         with c1:
             uri = avatar_uri(person["id"])
             if uri:
-                st.markdown(
-                    f'<img src="{uri}" style="width:100%;border-radius:14px">',
-                    unsafe_allow_html=True,
-                )
+                st.markdown(f'<img src="{uri}" style="width:100%;border-radius:14px">',
+                            unsafe_allow_html=True)
         with c2:
             st.markdown(
                 f'<span class="ed-name">{person["name"]}</span> '
@@ -384,7 +508,8 @@ def profile_card(person: dict):
                 f'<b>성향</b> {person.get("traits","—")}<br>'
                 f'<b>잘 맞는 MBTI</b> '
                 f'{" · ".join(mock_data.best_matching_mbti(person["mbti"]))}<br>'
-                f'<b>연관 성경서</b> {" · ".join(person.get("book_full_names") or person.get("books") or []) or "—"}</div>',
+                f'<b>연관 성경서</b> '
+                f'{" · ".join(person.get("book_full_names") or person.get("books") or []) or "—"}</div>',
                 unsafe_allow_html=True,
             )
         if person.get("quote"):
@@ -394,6 +519,10 @@ def profile_card(person: dict):
                 f'— {person.get("quote_ref","")}</div></div>',
                 unsafe_allow_html=True,
             )
+
+        seen, total = ss.card["idx"] + 1, len(ss.card["order"])
+        st.caption(f"추천 {seen} / {total}"
+                   + (" · 후보를 한 바퀴 다 보셨어요" if ss.card.get("wrapped") else ""))
 
         b1, b2 = st.columns([1, 1.4])
         with b1:
@@ -405,6 +534,23 @@ def profile_card(person: dict):
                          use_container_width=True, key="card_accept"):
                 _accept_disciple()
                 st.rerun()
+
+
+def _current_person():
+    """카드가 가리키는 제자를 '항상 안전하게' 꺼낸다.
+
+    추천 목록이 비거나 idx가 어긋나면 IndexError(list index out of range)가
+    화면에 그대로 터질 수 있었다. 범위를 클램프하고, 빈 목록이면 카드를 닫는다.
+    """
+    card = st.session_state.card
+    if not card:
+        return None
+    order = card.get("order") or []
+    if not order:
+        st.session_state.card = None
+        return None
+    card["idx"] = max(0, min(card.get("idx", 0), len(order) - 1))
+    return order[card["idx"]]
 
 
 def _format_history(person_id: str, max_lines: int = 20) -> str:
@@ -422,37 +568,72 @@ def _format_history(person_id: str, max_lines: int = 20) -> str:
     return "\n".join(lines[-max_lines:])
 
 
+def _ask(person_id: str, text: str) -> dict:
+    """hybrid_rag.answer 호출부 — 이 대화 상대와의 히스토리만 골라 전달."""
+    ss = st.session_state
+    return hybrid_rag.answer(
+        person_id=person_id,
+        user_mbti=ss.user["mbti"],
+        message=text,
+        history=_format_history(person_id),
+        user_name=ss.user["name"],
+        shared_memory=ss.shared_memory if person_id != "jesus" else "",
+        gender=ss.user["gender"],
+    )
+
+
 def _next_disciple():
-    """추천 거절 → emo_weight 키워서 재추천 (기존 프론트 로직 동일)."""
+    """추천 거절 → 다음 후보. 다 보면 감정 가중치를 키워 새 후보를 이어붙인다.
+
+    매 클릭마다 order를 통째로 재구성하면서 idx를 0으로 되돌리면
+    (1) 같은 두 사람 사이를 무한히 왔다갔다 하고,
+    (2) 재추천 결과가 비면 idx가 음수가 되어 IndexError가 터진다.
+    'order는 계속 누적, idx는 앞으로만'이라는 규칙으로 중복 추천과 인덱스
+    오류를 원천적으로 없앤다.
+    """
     ss = st.session_state
     card = ss.card
-    card["pass"] += 1
-    card["idx"] += 1
-    if card["pass"] >= 2:
-        card["w"] = min(3.0, card["w"] + 0.8)
-        r = hybrid_rag.recommend(ss.user["mbti"], card["jesus_summary"], card["w"])
-        shown = {p["id"] for p in card["order"][: card["idx"]]}
-        card["order"] = [p for p in r["ranked"] if p["id"] not in shown] + \
-                        card["order"][: card["idx"]]
-        card["idx"] = 0
-    if card["idx"] >= len(card["order"]):
-        card["idx"] = len(card["order"]) - 1
+    if not card:
+        return
+    card["pass"] = card.get("pass", 0) + 1
+    order = card.get("order") or []
+
+    if card["idx"] + 1 < len(order):
+        card["idx"] += 1                     # 아직 안 본 후보가 남음
+    else:
+        # 후보 소진 → 감정 반영을 키워 재추천하고, '아직 안 본 사람'만 뒤에 붙임
+        card["w"] = min(3.0, card.get("w", 1.0) + 0.8)
+        seen = {p["id"] for p in order}
+        try:
+            r = hybrid_rag.recommend(ss.user["mbti"], card.get("jesus_summary") or card["last_text"], card["w"])
+            fresh = [p for p in (r.get("ranked") or []) if p["id"] not in seen]
+        except Exception:
+            fresh = []
+        if fresh:
+            card["order"] = order + fresh
+            card["idx"] += 1
+        else:
+            # 정말 더 볼 사람이 없으면 처음으로 한 바퀴 (에러 대신 순환)
+            card["idx"] = 0
+            card["wrapped"] = True
+
+    card["idx"] = max(0, min(card["idx"], len(card["order"]) - 1))
     ss.card = card
 
 
 def _accept_disciple():
-    """제자 수락 → 예수님과 나눈 대화 요약을 shared_memory로 넘기고 hybrid_rag.answer() 로 실제 LLM 응답."""
+    """제자 수락 → 예수님과 나눈 대화 요약을 shared_memory로 넘기고 hybrid_rag.answer()로 응답."""
     ss = st.session_state
-    p = ss.card["order"][ss.card["idx"]]
+    p = _current_person()
+    if not p:
+        return
     last = ss.card["last_text"]
-    ss.shared_memory = ss.card["jesus_summary"]
+    ss.shared_memory = ss.card.get("jesus_summary", "")
     ss.card = None
     ss.active = p["id"]
     ss.msgs.append({"role": "bot", "person_id": "jesus", "meta": True,
                     "text": f'그래, {p["name"]}와 마음을 나눠보거라. 나는 늘 곁에 있으마.'})
-    with st.spinner("말씀을 찾는 중…"):
-        out = hybrid_rag.answer(p["id"], ss.user["mbti"], last,
-                                 user_name=ss.user["name"], shared_memory=ss.shared_memory)
+    out = _ask(p["id"], last)
     ss.msgs.append({"role": "bot", "person_id": p["id"],
                     "text": out["answer"], "verses": out.get("verses")})
 
@@ -462,16 +643,29 @@ def _jesus_turn(text: str):
     ss = st.session_state
     history = _format_history("jesus")  # 현재 발화를 append 하기 전에 만들어야 중복 안 됨
     ss.msgs.append({"role": "user", "text": text, "person_id": "jesus"})
-    out = hybrid_rag.answer("jesus", ss.user["mbti"], text, history=history,
-                             user_name=ss.user["name"])
+    out = hybrid_rag.answer(
+        person_id="jesus", user_mbti=ss.user["mbti"], message=text,
+        history=history, user_name=ss.user["name"], gender=ss.user["gender"],
+    )
     ss.msgs.append({"role": "bot", "person_id": "jesus",
                     "text": out["answer"], "verses": out.get("verses")})
 
     full_history = _format_history("jesus")
     if hybrid_rag.should_recommend(full_history):
         rec = hybrid_rag.recommend(ss.user["mbti"], full_history, 1.0)
-        ss.card = {"order": rec["ranked"], "idx": 0, "pass": 0, "w": 1.0,
-                   "last_text": text, "jesus_summary": full_history}
+        ranked = rec.get("ranked") or []
+        if ranked:
+            ss.card = {"order": ranked, "idx": 0, "pass": 0, "w": 1.0,
+                       "last_text": text, "jesus_summary": full_history, "wrapped": False}
+
+
+@st.cache_data(ttl=60)
+def _verse_db_health() -> dict:
+    """벡터 인덱스 상태 (구절이 왜 안 붙는지 화면에서 바로 보이게)."""
+    try:
+        return vector_store.health()
+    except Exception as e:
+        return {"ready": False, "count": 0, "db_error": repr(e)}
 
 
 def page_chat():
@@ -487,40 +681,52 @@ def page_chat():
             st.rerun()
         return
 
-    # 홈에서 넘어온 첫 문장 처리
-    if ss.seed:
-        seed, ss.seed = ss.seed, None
-        with st.spinner("마음을 살피는 중…"):
-            _jesus_turn(seed)
-        st.rerun()
-
-    if not ss.msgs:
-        st.markdown(
-            f'<div style="text-align:center;padding:30px 0 10px">'
-            f'<img src="{avatar_uri("jesus")}" style="width:96px;border-radius:50%">'
-            f'<div style="font-family:Cormorant,serif;font-size:25px;font-weight:600;'
-            f'color:{INK};margin-top:14px">나의 {ss.user["name"]}아, 편히 말해보거라.</div>'
-            f'<div style="font-size:13px;color:{MUTED};margin-top:4px">'
-            f'마음을 나누면, 어울리는 벗이 성경으로 답합니다.</div></div>',
-            unsafe_allow_html=True,
+    health = _verse_db_health()
+    if not health.get("ready"):
+        st.warning(
+            f"성경 Vector DB({health.get('backend','?')})에 연결되지 않아 답변에 구절이 "
+            f"붙지 않을 수 있습니다 — 인덱싱된 구절 {health.get('count', 0)}개"
+            + (f", 임베딩 오류: {health['embedding_error']}" if health.get("embedding_error") else "")
+            + ".",
+            icon="⚠️",
         )
 
-    for m in ss.msgs:
-        render_msg(m)
+    # 대화는 가운데 정렬하되, 예전보다 넓게
+    _, mid, _ = st.columns([1, 4.4, 1])
+    with mid:
+        if ss.seed:
+            seed, ss.seed = ss.seed, None
+            with st.spinner("마음을 살피는 중…"):
+                _jesus_turn(seed)
+            st.rerun()
 
-    if ss.card:
-        profile_card(ss.card["order"][ss.card["idx"]])
-        st.caption("추천된 벗을 먼저 확인해보세요.")
-        return
+        if not ss.msgs:
+            st.markdown(
+                f'<div style="text-align:center;padding:30px 0 10px">'
+                f'<img src="{avatar_uri("jesus")}" style="width:96px;border-radius:50%">'
+                f'<div style="font-family:Cormorant,serif;font-size:25px;font-weight:600;'
+                f'color:{INK};margin-top:14px">나의 {ss.user["name"]}아, 편히 말해보거라.</div>'
+                f'<div style="font-size:13px;color:{MUTED};margin-top:4px">'
+                f'마음을 나누면, 어울리는 벗이 성경으로 답합니다.</div></div>',
+                unsafe_allow_html=True,
+            )
+
+        for m in ss.msgs:
+            render_msg(m)
+
+        if ss.card:
+            person = _current_person()
+            if person:
+                profile_card(person)
+                st.caption("추천된 벗을 먼저 확인해보세요.")
+                return
 
     text = st.chat_input("마음에 있는 것을 적어보세요…")
     if text:
         if ss.active:
-            history = _format_history(ss.active)  # 현재 발화를 append 하기 전에 만들어야 중복 안 됨
-            ss.msgs.append({"role": "user", "text": text, "person_id": ss.active})
             with st.spinner("말씀을 찾는 중…"):
-                out = hybrid_rag.answer(ss.active, ss.user["mbti"], text, history=history,
-                                         user_name=ss.user["name"], shared_memory=ss.shared_memory)
+                out = _ask(ss.active, text)
+            ss.msgs.append({"role": "user", "text": text, "person_id": ss.active})
             ss.msgs.append({"role": "bot", "person_id": ss.active,
                             "text": out["answer"], "verses": out.get("verses")})
         else:
@@ -540,6 +746,8 @@ def page_diagnose():
                 unsafe_allow_html=True)
 
     default = ss.user["mbti"] if ss.user else "INFJ"
+    if default not in mock_data.TYPE_ORDER:
+        default = "INFJ"
     mbti = st.selectbox("내 유형", mock_data.TYPE_ORDER,
                         index=mock_data.TYPE_ORDER.index(default))
 
@@ -589,9 +797,10 @@ def page_explore():
                 unsafe_allow_html=True)
 
     people = list(mock_data.PEOPLE.values())
-    for row_start in range(0, len(people), 5):
-        cols = st.columns(5)
-        for c, p in zip(cols, people[row_start:row_start + 5]):
+    per_row = 7                     # 와이드 레이아웃에 맞춰 한 줄에 더 많이
+    for row_start in range(0, len(people), per_row):
+        cols = st.columns(per_row)
+        for c, p in zip(cols, people[row_start:row_start + per_row]):
             with c:
                 uri = avatar_uri(p["id"])
                 if uri:
@@ -611,7 +820,8 @@ def page_explore():
                     st.write(f'**성향** {p.get("traits","—")}')
                     st.write(f'**잘 맞는 MBTI** '
                              f'{" · ".join(mock_data.best_matching_mbti(p["mbti"]))}')
-                    st.write(f'**연관 성경서** {" · ".join(p.get("book_full_names") or p.get("books") or []) or "—"}')
+                    st.write(f'**연관 성경서** '
+                             f'{" · ".join(p.get("book_full_names") or p.get("books") or []) or "—"}')
                     st.markdown(f'<div class="ed-quote">“{p.get("quote","")}”'
                                 f'<div style="font-size:11.5px;color:#8A9578;margin-top:6px">'
                                 f'— {p.get("quote_ref","")}</div></div>',
@@ -638,7 +848,8 @@ def page_graph():
         pos[t] = (cx + R * math.cos(a), cy + R * math.sin(a))
 
     people = [p for p in mock_data.PEOPLE.values() if p["id"] != "jesus"]
-    parts = ['<svg viewBox="0 0 760 600" style="width:100%">']
+    parts = ['<svg viewBox="0 0 760 600" '
+             'style="width:100%;max-width:860px;display:block;margin:0 auto">']
 
     for p in people:
         tx, ty = pos[p["mbti"]]
@@ -671,6 +882,15 @@ def page_graph():
 # ══════════════════════════════════════════════════════════════════════
 #  라우팅
 # ══════════════════════════════════════════════════════════════════════
+PAGES = {
+    "home": page_home,
+    "chat": page_chat,
+    "diagnose": page_diagnose,
+    "explore": page_explore,
+    "graph": page_graph,
+}
+
+
 def main():
     init_state()
     inject_css()
@@ -679,17 +899,7 @@ def main():
     if st.session_state.auth_open:
         auth_dialog()
 
-    page = st.session_state.page
-    if page == "home":
-        page_home()
-    elif page == "chat":
-        page_chat()
-    elif page == "diagnose":
-        page_diagnose()
-    elif page == "explore":
-        page_explore()
-    elif page == "graph":
-        page_graph()
+    PAGES.get(st.session_state.page, page_home)()
 
 
 if __name__ == "__main__":

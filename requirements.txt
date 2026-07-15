@@ -1,10 +1,16 @@
 # ── Streamlit 프로토타입 ────────────────────────────────
-streamlit>=1.36
+# 1.39+ 필요: 버튼 key → .st-key-<key> CSS 클래스 (로고=홈, 메뉴 사이즈 통일에 사용)
+streamlit>=1.39
 python-dotenv>=1.0
 
 # ── 설정/검증 (백엔드 config 그대로 사용) ──────────────
 pydantic>=2.6
 pydantic-settings>=2.2
+
+# ── 인증 (회원정보 data/users.json 저장) ────────────────
+pyjwt>=2.8
+passlib>=1.7
+bcrypt>=4.0,<4.1     # passlib 1.7.x 호환을 위해 상한 고정
 
 # ── LangChain / RAG ─────────────────────────────────────
 langchain>=0.2
