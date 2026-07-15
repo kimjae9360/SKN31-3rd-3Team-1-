@@ -1,6 +1,8 @@
-# 📖 로컬 RAG 기반 성경구절 검색 챗봇 시스템
+# 📖 Eden — 성경 인물 MBTI 궁합 기반 RAG 상담 챗봇
 
-본 프로젝트는 LLM(ChatOpenAI)과 오픈소스 임베딩 모델을 결합하여, 사용자의 자연어 질문에 맞는 성경 구절을 의미론적으로 검색하고 답변을 생성하는 **온프레미스형 RAG(Retrieval-Augmented Generation) 챗봇**입니다. 
+**Eden**은 사용자의 MBTI와 그날의 고민을 바탕으로 예수님·12제자 중 가장 잘 맞는 인물을 Neo4j 그래프로 찾아 매칭하고, 그 인물의 페르소나로 성경 구절 기반 위로를 건네는 **하이브리드 RAG(Vector + Graph) 상담 챗봇**입니다. ChatOpenAI(LLM)와 임베딩 모델을 결합해 사용자의 자연어 고민에 의미론적으로 가장 가까운 성경 구절을 검색하고, Neo4j에 저장된 curated MBTI 궁합 매트릭스로 "누가 답할지"를 함께 결정합니다.
+
+> Streamlit 단일 프로세스로 서비스 중이며(`streamlit_app.py`), 배포는 Streamlit Community Cloud + Neo4j Aura + Qdrant Cloud 조합을 씁니다. 배포 상세는 [README_STREAMLIT.md](README_STREAMLIT.md) 참고.
 
 ## 1. 팀원 및 역할
 <div align="center">
@@ -38,11 +40,15 @@
 ---
 ## 2. 주요 특징
 
-유지보수의 효율성과 역할 분담을 극대화하기 위해 코드베이스를 **UI(React), 데이터 레이어(Chroma DB), AI 레이어(LangChain/LangGraph)** 로 분리하여 모듈화했습니다.
+유지보수의 효율성과 역할 분담을 극대화하기 위해 코드베이스를 **UI(Streamlit), 데이터 레이어(Vector DB + Graph DB), AI 레이어(services/hybrid_rag.py 오케스트레이터)** 로 분리하여 모듈화했습니다. HTTP 계층 없이 Streamlit이 백엔드 서비스 함수를 직접 호출하는 단일 프로세스 구조입니다.
 
 - **의미론적 유사도 검색(Dense Retrieval)**: 단순한 키워드 매칭을 넘어, "마음이 슬플 때"와 같은 추상적인 유의어 및 문맥을 파악하여 관련 구절을 추출합니다.
-- **고속 벡터 캐싱**: 최초 1회만 JSON 데이터를 임베딩하여 로컬 `chroma_db` 폴더에 물리 저장하며, 2회차 실행부터는 수 초 내에 고속 로드됩니다.
-- **자원 최적화**: 무거운 생성형 모델은 ChatOpenAI로 구동하고, 임베딩은 초경량 HuggingFace 로컬 모델로 분리하여 CPU 환경에서도 메모리 오버플로우 없이 안정적으로 작동합니다.
+- **Graph-guided 하이브리드 검색**: Neo4j가 먼저 "누가 답할지"(제자 궁합)와 "어떤 성경서 범위에서 찾을지"를 정하고, Vector DB가 그 범위 안에서 "무슨 말씀으로" 답할지 찾습니다.
+- **실제 curated MBTI 궁합 매트릭스**: 16×16 MBTI 조합 전체에 대한 궁합 점수가 `(MBTI)-[:MBTI_COMPATIBILITY]->(MBTI)` 관계로 Neo4j에 저장되어 있어, 근사치가 아닌 실제 팀 curated 데이터로 추천 순위를 매깁니다.
+- **대화 맥락 유지**: 예수님과 자유롭게 몇 턴 대화한 뒤 LLM이 스스로 "제자를 추천할 만큼 깊어졌는지" 판단해 전환하며, 예수님/각 제자와의 대화 이력을 완전히 분리해 서로 섞이지 않게 관리합니다.
+- **핵심 구절 1개만 표기**: 검색된 여러 구절 중 LLM이 "이번 답변에서 실제로 근거로 삼은" 구절 하나만 답변 끝에 표기해, 관련 없는 구절이 나열되지 않습니다.
+- **자원 최적화**: 무거운 생성형 모델은 ChatOpenAI로 구동하고, 임베딩은 로컬(HuggingFace) 또는 배포용(OpenAI text-embedding-3-small)으로 환경에 따라 전환합니다.
+- **폴백 설계**: Neo4j/Vector DB/OpenAI 중 무엇이 끊겨도 `mock_data.py` 로컬 데이터로 즉시 대체되어 서비스가 멈추지 않습니다.
 - **할루시네이션(환각) 방지**: 프롬프트 엔지니어링을 통해 제공된 성경 문맥 안에서만 답변하도록 페르소나를 제한했습니다.
 
 ## 3. 주요 기능
@@ -52,31 +58,37 @@
 ## 4. 프로젝트 구조 (Directory Structure)
 
 ```text
-eden-portal/
-├── frontend/
-│   ├── EdenPortal.jsx   # ★ 단일 파일 데모 (그대로 열면 실행). 이미지 내장.
-│   ├── api.js           # 백엔드 호출 클라이언트 (배포용, 목업 폴백 내장)
-│   └── mock.js          # 오프라인 목업 로직 (백엔드와 동일 궁합/감정)
-└── backend/
-    ├── app/
-    │   ├── core/config.py         # ★ 모델·DB 교체는 전부 여기
-    │   ├── services/
-    │   │   ├── embeddings.py       # 임베딩 프로바이더 팩토리 (hf/openai/ollama)
-    │   │   ├── llm.py              # LLM 프로바이더 팩토리 (ollama/openai/anthropic)
-    │   │   ├── vector_store.py     # 성경 Vector DB (Chroma, graph-guided 필터)
-    │   │   ├── graph_store.py      # Neo4j 궁합·제자·성경서
-    │   │   ├── emotion.py          # 감정 추론 (키워드 + LLM 폴백)
-    │   │   ├── hybrid_rag.py       # ★ 오케스트레이터 (recommend/answer)
-    │   │   ├── auth.py             # 회원가입·로그인·JWT
-    │   │   └── mock_data.py        # DB 미연결 시 폴백
-    │   ├── api/                    # auth / chat / explore 라우터
-    │   ├── models/schemas.py       # 요청·응답 스키마
-    │   └── main.py                 # FastAPI 진입점
-    ├── requirements.txt
-    └── .env.example
-├── bible_structured.json           # 원본 성경 데이터 소스 (JSON)
-└── README.md                       # 프로젝트 안내서
+SKN31-3rd-3Team/
+├── streamlit_app.py             # ★ 진입점. UI 전체 + backend/services 직접 import (HTTP 없음)
+├── requirements.txt              # 루트 실행용 (streamlit + langchain + qdrant/chroma + auth)
+├── assets/                       # 인물 아바타(webp), 배경 이미지
+├── docs/                         # 아키텍처 다이어그램
+├── data/                         # bible_structured.json(커밋됨), chroma_db/·users.json(gitignore)
+├── backend/
+│   ├── .env                      # OPENAI_API_KEY, NEO4J_*, QDRANT_* (커밋 안 됨)
+│   ├── app/
+│   │   ├── core/config.py         # ★ 모델·DB·경로 설정은 전부 여기
+│   │   ├── services/
+│   │   │   ├── embeddings.py       # 임베딩 프로바이더 팩토리 (hf/openai/ollama)
+│   │   │   ├── llm.py              # LLM 프로바이더 팩토리 (openai/ollama/anthropic)
+│   │   │   ├── vector_store.py     # Vector DB (Chroma 로컬 / Qdrant Cloud 배포, graph-guided 필터)
+│   │   │   ├── graph_store.py      # Neo4j 궁합·제자·MBTI 매트릭스 조회
+│   │   │   ├── bible_books.py      # 성경 66권 전체명 ↔ 약어 매핑 (필터 안전망)
+│   │   │   ├── emotion.py          # 감정 추론 (키워드 + LLM 폴백)
+│   │   │   ├── hybrid_rag.py       # ★ 오케스트레이터 (recommend/answer/should_recommend)
+│   │   │   ├── prompts.py          # 예수님/제자 페르소나 시스템 프롬프트
+│   │   │   ├── auth.py             # 회원가입·로그인 (bcrypt + data/users.json 영속화)
+│   │   │   └── mock_data.py        # DB/API 미연결 시 폴백 데이터
+│   │   ├── api/                    # FastAPI 라우터 (레거시, Streamlit 경로에서는 미사용)
+│   │   └── main.py                 # FastAPI 진입점 (레거시)
+│   └── scripts/
+│       ├── build_vector_db.py       # 로컬 Chroma 재생성 CLI
+│       └── migrate_neo4j_to_aura.py # 로컬 Neo4j → Aura 마이그레이션
+├── README.md                     # 이 문서
+└── README_STREAMLIT.md           # 실행/배포 가이드 (Streamlit Cloud + Neo4j Aura + Qdrant Cloud)
 ```
+
+> `backend/app/api/`, `models/schemas.py`는 초기 FastAPI+React 설계의 흔적으로, 현재 서비스 중인 Streamlit 경로에서는 쓰이지 않습니다(`backend/app/services/*`를 직접 import). 남겨둬도 무방하나 신규 기능은 services/에만 추가하면 됩니다.
 
 
 ## 5. 수집한 데이터와 프로젝트의 관련성
@@ -152,27 +164,44 @@ flowchart TD
 
 ### Database 설계
 
-**Vector DB (Chroma) — metadata 설계**
+**Vector DB — metadata 설계**
+
+로컬 개발은 Chroma(`data/chroma_db/`, 자동 재생성), 배포판은 Qdrant Cloud(`bible_verses` 컬렉션, 사전 임베딩 스냅샷 복원)를 씁니다. 둘 다 아래와 동일한 metadata 스키마를 씁니다.
 
 | 필드 | 타입 | 설명 |
 |---|---|---|
 | `page_content` | string | `"[책이름 장:절] 본문내용"` 형태로 조합된 임베딩 대상 텍스트 |
-| `book` | string | 성경 책 이름 (예: 창세기) |
+| `book` | string | 성경 책 **약어** (예: 창, 마, 벧전) — Qdrant 스냅샷 표기 기준 |
 | `chapter` | int | 장 번호 |
 | `verse` | int | 절 번호 |
 | `content` | string | 구절 원문 (출처 정보와 분리해 UI 서빙용으로 별도 보관) |
 
-질의 임베딩과의 코사인 유사도 기반 Top-K 검색을 기본으로 하며, 필요 시 `book` / `chapter` 메타데이터 필터를 함께 적용해 검색 범위를 좁힙니다.
+질의 임베딩과의 코사인 유사도 기반 Top-K 검색을 기본으로 하며, Neo4j가 고른 제자의 연관 성경서로 `book` 메타데이터 필터를 적용해 범위를 좁힙니다(graph-guided filter). 필터에 넘기는 책 이름이 전체명/약어 어느 쪽이어도 `bible_books.normalize_books()`가 실제 인덱스 표기(약어)로 맞춰 줍니다.
 
-**GraphDB (Neo4j) — Node / Relationship / Property 설계**
+**GraphDB (Neo4j) — 실제 Node / Relationship 설계**
 
-| 구분 | 예시 | 설명 |
+Neo4j Aura에 직접 접속해 확인한 라이브 스키마입니다(예수 1 · 제자 12 · MBTI 16 · Trait 37 · Verse 15 · User N).
+
+| 구분 | 종류 | 설명 |
 |---|---|---|
-| Node | `Book`, `Person`(인물·제자), `Emotion`, `Compatibility`(궁합) | 성경서, 인물, 감정, 궁합 등 도메인 개체를 노드로 표현 |
-| Relationship | `BELONGS_TO`, `MENTIONS`, `RELATED_TO`, `EXPRESSES` | 장/절-책 소속, 구절-인물 언급, 인물 간 궁합, 구절-감정 연결 관계 |
-| Property | 이름, 설명, 장/절 위치 등 | 각 Node/Relationship이 갖는 속성값 |
+| Node | `Jesus`, `Disciple`, `MBTI`, `Trait`, `Verse`, `User` | 예수님, 12제자, MBTI 16유형, 성향, 연관 성경 구절, 회원 |
+| Relationship | `FOLLOWS`, `HAS_MBTI{rank}`, `MATCHES`, `MBTI_COMPATIBILITY{score}`, `HAS_TRAIT`, `RELATED_VERSE`, `BROTHER_OF`, `MATCHED_WITH{matched_at}` | 아래 상세 |
+| Disciple Property | `id, name, title, speech_style, quote, quote_ref, traits, role, epithet, person_order` | 카드/프롬프트에 쓰는 인물 정보 (그래프 자체에 저장, mock_data는 보조 폴백) |
 
-`graph_store.py`는 이 그래프를 조회하여 벡터 검색만으로는 파악하기 어려운 **인물 간 관계 · 궁합 · 문맥 정보**를 보강하는 역할을 합니다.
+| 관계 | 방향 | 의미 |
+|---|---|---|
+| `FOLLOWS` | Disciple → Jesus | 제자가 예수님을 따름 |
+| `HAS_MBTI {rank}` | Disciple → MBTI | 제자 자신과 어울리는 MBTI 1·2순위 |
+| `MATCHES` | MBTI → Disciple | 사용자 MBTI → 직접 매칭되는 제자 (16종 1:1) |
+| `MBTI_COMPATIBILITY {score}` | MBTI → MBTI | 16×16 전체 궁합 curated 매트릭스 (256쌍) |
+| `HAS_TRAIT` | Disciple → Trait | 제자의 성향 키워드 |
+| `RELATED_VERSE` | Disciple → Verse | 제자와 연관된 성경 구절 (실제 본문 포함) |
+| `BROTHER_OF` | Disciple → Disciple | 형제 관계 (베드로-안드레, 야고보-요한) |
+| `MATCHED_WITH {matched_at}` | User → Disciple | 회원이 실제로 매칭된 이력 |
+
+`graph_store.py`는 이 그래프를 조회해 (1) `MATCHES` 직접 매칭이면 최고점, (2) 아니면 `MBTI_COMPATIBILITY` curated 점수로 순위를 매겨 벡터 검색만으로는 파악하기 어려운 **인물 간 궁합 · 관계 정보**를 보강합니다. Neo4j 연결 실패 시 `mock_data.SCORES`(동일 curated 매트릭스의 로컬 사본)로 자동 폴백합니다.
+
+> 아래 [Neo4j · VectorDB 구성도](#10-neo4j--vectordb-구성도)에서 전체 파이프라인을 다이어그램으로 볼 수 있습니다.
 
 ### RAG 시스템 구성
 
@@ -204,15 +233,17 @@ stateDiagram-v2
 
 ## 9. Application의 주요 기능
 
-Eden은 크게 네 가지 핵심 기능으로 구성되어 있습니다.
+Eden은 크게 다섯 가지 핵심 기능으로 구성되어 있습니다.
 
-첫째, **자연어 기반 성경 구절 검색 및 상담**입니다. 사용자가 "마음이 슬플 때", "위로가 필요할 때"와 같이 일상어로 질문을 입력하면, 하이브리드 RAG 파이프라인이 의미상 가장 관련성 높은 구절을 찾아 문맥에 맞는 답변을 생성합니다.
+첫째, **예수님과의 자유 대화 → 제자 추천**입니다. 사용자가 고민을 적으면 곧바로 제자를 추천하지 않고, 예수님과 몇 턴 자유롭게 대화합니다. LLM이 대화가 충분히 깊어졌다고 판단하면 그때 MBTI 궁합이 가장 잘 맞는 제자를 추천 카드로 보여주고, 수락 시 예수님과 나눈 대화 요약(`shared_memory`)을 그대로 들고 넘어가 맥락이 끊기지 않습니다.
 
-둘째, **감정 기반 추천**입니다. 사용자의 발화에서 감정을 분석해, 단순 키워드 검색을 넘어 현재 감정 상태에 어울리는 구절과 메시지를 함께 제안합니다.
+둘째, **Neo4j curated MBTI 궁합 기반 추천**입니다. "누가 답할지"는 16×16 전체 조합의 실제 curated 궁합 점수(`MBTI_COMPATIBILITY`)와 사용자 MBTI-제자 직접 매칭(`MATCHES`)을 함께 반영해 결정하며, 단순 글자 유사도 근사가 아닙니다.
 
-셋째, **관계·궁합 탐색**입니다. Neo4j 그래프 DB에 저장된 인물·제자·성경서 간의 관계 정보를 바탕으로, 벡터 검색만으로는 다루기 어려운 인물 간 연결이나 궁합 정보를 함께 제공합니다.
+셋째, **자연어 기반 성경 구절 검색 및 상담**입니다. 사용자가 "마음이 슬플 때", "위로가 필요할 때"와 같이 일상어로 질문을 입력하면, 하이브리드 RAG 파이프라인(그래프가 고른 성경서 범위 + 벡터 유사도 검색)이 가장 관련성 높은 구절을 찾고, LLM이 답변에서 실제로 근거로 삼은 구절 1개만 표시합니다.
 
-넷째, **회원 인증 및 개인화**입니다. JWT 기반 회원가입/로그인을 지원하여, 이후 개인화된 탐색(Explore) 콘텐츠와 상담 이력 등을 사용자별로 관리할 수 있는 구조를 갖추고 있습니다.
+넷째, **대화 상대별 맥락 완전 분리**입니다. 예수님과의 대화, 그리고 이후 이어지는 제자와의 대화는 서로 다른 스레드로 완전히 분리되어 기록됩니다 — 다른 상대에게 한 말이 섞여 들어가 엉뚱한 답변으로 이어지는 문제를 원천 차단합니다.
+
+다섯째, **회원 인증 및 개인화**입니다. bcrypt 해시 + 원자적 파일 쓰기로 실제 영속화되는 회원가입/로그인을 지원하며, 성별에 따라 예수님/제자가 "형제님"/"자매님" 호칭을 자동으로 맞추고 이름은 성을 뗀 형태로 자연스럽게 부릅니다.
 
 (※ 실제 시연 화면 캡처는 추후 추가 예정)
 
