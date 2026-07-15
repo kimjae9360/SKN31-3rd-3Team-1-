@@ -165,7 +165,7 @@ def inject_css():
   .ed-verse {{
     display: block; box-sizing: border-box;
     margin: 12px 0 4px 0; padding: 14px 16px;
-    border: 1px solid {LINE}; border-left: 4px solid {ACCENT};
+    border: 1px solid {LINE}; border-left: 4px solid #D4AF37;
     border-radius: 8px; background: #F6F8EF;
     font-size: 14.5px; line-height: 1.6; color: #56634A;
     white-space: normal;
@@ -173,7 +173,7 @@ def inject_css():
   }}
   .ed-verse .ref {{
     display: inline; font-size: 14.5px; font-weight: 700; letter-spacing: .02em;
-    color: {ACCENT}; margin-right: 8px;
+    color: #B8860B; margin-right: 8px;
   }}
 
   .ed-badge {{
@@ -242,6 +242,13 @@ def inject_css():
     background: rgba(255,255,252,.86); border: 1px solid {LINE};
     border-radius: 16px; padding: 16px 20px;
     overflow: auto;
+  }}
+  /* 사용자 말풍선 vs AI 말풍선 시각적 분리 */
+  [data-testid="stChatMessage"]:has([data-testid="chatAvatarIcon-user"]) {{
+    background: #F0F4E8; border: 1px solid #DCE6D0;
+  }}
+  [data-testid="stChatMessage"]:has(img) {{
+    background: #FFFFFF; box-shadow: 0 4px 14px rgba(0,0,0,0.04);
   }}
   /* 말풍선 안 콘텐츠가 밖으로 새지 않도록 */
   [data-testid="stChatMessage"] * {{ overflow-wrap: anywhere; }}
@@ -509,7 +516,7 @@ def render_msg(m: dict):
         # hybrid_rag가 이미 '이번 답변에서 가장 중요하게 쓴 구절' 1개로 줄여 준다.
         for v in (m.get("verses") or [])[:1]:
             st.markdown(
-                f'<div class="ed-verse"><span class="ref">{v["source"]}</span>'
+                f'<div class="ed-verse"><span class="ref">📖 {v["source"]}</span>'
                 f'{v["content"]}</div>',
                 unsafe_allow_html=True,
             )
@@ -662,6 +669,7 @@ def _accept_disciple():
     ss.active = p["id"]
     ss.msgs.append({"role": "bot", "person_id": "jesus", "meta": True,
                     "text": f'그래, {p["name"]}와 마음을 나눠보거라. 나는 늘 곁에 있으마.'})
+    st.toast(f"🔔 {p['name']}와(과) 대화가 연결되었습니다.", icon="🔔")
     out = _ask(p["id"], last)
     ss.msgs.append({"role": "bot", "person_id": p["id"],
                     "text": out["answer"], "verses": out.get("verses")})
@@ -751,15 +759,28 @@ def page_chat():
                 return
 
     text = st.chat_input("마음에 있는 것을 적어보세요…")
+    
+    # 퀵 리플라이(추천 질문) 구현 - 빈 대화일 때만 노출
+    if not ss.msgs and not text:
+        st.markdown("<br>", unsafe_allow_html=True)
+        cols = st.columns(3)
+        if cols[0].button("오늘 하루 너무 지쳤어요 😢", use_container_width=True):
+            text = "오늘 하루 너무 지쳤어요 😢"
+        if cols[1].button("어떻게 기도할까요? 🙏", use_container_width=True):
+            text = "어떻게 기도해야 할지 모르겠어요 🙏"
+        if cols[2].button("말씀을 듣고 싶어요 📖", use_container_width=True):
+            text = "제게 맞는 성경 구절을 하나 읽어주시겠어요? 📖"
+
     if text:
         if ss.active:
-            with st.spinner("말씀을 찾는 중…"):
+            name = mock_data.PEOPLE.get(ss.active, {}).get("name", "제자")
+            with st.spinner(f"{name}가 주님의 말씀을 떠올리는 중..."):
                 out = _ask(ss.active, text)
             ss.msgs.append({"role": "user", "text": text, "person_id": ss.active})
             ss.msgs.append({"role": "bot", "person_id": ss.active,
                             "text": out["answer"], "verses": out.get("verses")})
         else:
-            with st.spinner("마음을 살피는 중…"):
+            with st.spinner("예수님께서 당신의 마음을 들여다보시는 중..."):
                 _jesus_turn(text)
         st.rerun()
 
