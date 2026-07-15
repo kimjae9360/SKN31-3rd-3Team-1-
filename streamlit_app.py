@@ -164,17 +164,16 @@ def inject_css():
      말풍선을 뚫고 나가 깨진다 — 명시적으로 막는다. */
   .ed-verse {{
     display: block; box-sizing: border-box;
-    width: 100%; overflow: hidden;
-    margin: 12px 0 4px 0; padding: 12px 14px;
+    margin: 12px 0 4px 0; padding: 14px 16px;
     border: 1px solid {LINE}; border-left: 4px solid {ACCENT};
     border-radius: 8px; background: #F6F8EF;
-    font-size: 13.5px; line-height: 1.6; color: #56634A;
+    font-size: 14.5px; line-height: 1.6; color: #56634A;
     white-space: normal;
     overflow-wrap: break-word; word-break: keep-all;
   }}
   .ed-verse .ref {{
-    display: block; font-size: 11px; font-weight: 700; letter-spacing: .06em;
-    color: {ACCENT}; margin-bottom: 3px;
+    display: inline; font-size: 14.5px; font-weight: 700; letter-spacing: .02em;
+    color: {ACCENT}; margin-right: 8px;
   }}
 
   .ed-badge {{
