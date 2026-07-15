@@ -195,14 +195,18 @@ def inject_css():
   /* ── 헤더 ─────────────────────────────────────────────────────────
      로고 자체가 홈 버튼이다(별도 '홈' 탭 없음).
      st.button(key="logo_home") → 래퍼 div 에 .st-key-logo_home 클래스가 붙는다. */
-  .st-key-logo_home button {{
+  .st-key-logo_home button,
+  .st-key-logo_home button div,
+  .st-key-logo_home button p {{
     background: transparent !important; border: none !important; box-shadow: none !important;
     padding: 0 !important; height: 56px !important;
-    font-family: Cormorant, serif !important; font-size: 42px !important;
+    font-family: Cormorant, serif !important; font-size: 38px !important;
     font-weight: 700 !important; color: {INK} !important;
     justify-content: flex-start !important; letter-spacing: -.01em;
+    margin: 0 !important; line-height: 56px !important;
   }}
-  .st-key-logo_home button:hover {{ color: {ACCENT} !important; }}
+  .st-key-logo_home button:hover,
+  .st-key-logo_home button:hover p {{ color: {ACCENT} !important; }}
 
   /* 메뉴 탭 사이즈 통일 + 글자 밀림 방지.
      모든 nav 버튼 높이/폰트를 고정하고 줄바꿈을 막아 한 줄로 크게 쓴다. */
