@@ -235,19 +235,21 @@ def search(query: str, k: int | None = None, books: list[str] | None = None):
         docs = store.similarity_search(query, k=k)
 
     out = []
+    from app.services.bible_books import to_full
     for d in docs:
         m = d.metadata or {}
         book = m.get("book", "")
+        full_book = to_full(book) if book else book
         chapter = m.get("chapter", "")
         verse = m.get("verse", "")
         # 인덱스 스키마가 달라 metadata["content"]가 없어도(page_content만 있어도)
         # 화면이 깨지지 않도록 폴백을 둔다.
         content = m.get("content") or _strip_source_prefix(d.page_content)
         out.append({
-            "book": book,
+            "book": full_book,
             "chapter": chapter,
             "verse": verse,
             "content": content,
-            "source": m.get("source") or f"{book} {chapter}:{verse}".strip(),
+            "source": f"{full_book} {chapter}:{verse}".strip(),
         })
     return out
