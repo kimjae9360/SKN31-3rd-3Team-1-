@@ -240,7 +240,8 @@ def inject_css():
 
   [data-testid="stChatMessage"] {{
     background: rgba(255,255,252,.86); border: 1px solid {LINE};
-    border-radius: 16px; padding: 6px 12px;
+    border-radius: 16px; padding: 16px 20px;
+    overflow: auto;
   }}
   /* 말풍선 안 콘텐츠가 밖으로 새지 않도록 */
   [data-testid="stChatMessage"] * {{ overflow-wrap: anywhere; }}
