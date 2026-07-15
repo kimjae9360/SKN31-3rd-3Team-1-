@@ -57,6 +57,11 @@ class Settings(BaseSettings):
     RETRIEVAL_K: int = 4                     # 최종 LLM에 넣을 구절 수
     RETRIEVAL_FETCH_K: int = 20              # rerank 전 1차로 넉넉히 가져올 수
 
+    # Qdrant (VECTOR_BACKEND="qdrant"일 때만 사용)
+    QDRANT_URL: str = "http://localhost:6333"
+    QDRANT_API_KEY: str = ""                 # Qdrant Cloud는 필요, 로컬 Docker는 비워둠
+    QDRANT_COLLECTION: str = "bible_verses"
+
     # ══════════════════════════════════════════════════════════════════
     # 4. Graph DB (Neo4j)
     # ══════════════════════════════════════════════════════════════════

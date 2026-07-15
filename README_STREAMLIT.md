@@ -64,26 +64,31 @@ streamlit run streamlit_app.py
 
 ## 배포 (Streamlit Community Cloud, 무료)
 
-로컬 `data/chroma_db`(152MB)와 Neo4j Desktop(로컬 전용)은 그대로 올릴 수 없거나
-클라우드에서 접속할 수 없습니다. 대신:
-- **벡터DB**: `data/bible_structured.json`(6.8MB, 원본만 커밋됨)으로부터
-  앱이 최초 실행 시 자동으로 재생성합니다 (`streamlit_app.py`의
-  `_ensure_vector_store_ready()`).
+로컬 `data/chroma_db`(152MB), Qdrant 스냅샷(253MB), Neo4j Desktop(로컬 전용)은
+그대로 올릴 수 없거나 클라우드에서 접속할 수 없습니다. 대신:
+- **벡터DB**: 배포판은 **Qdrant Cloud**(무료 티어)를 씁니다. 로컬에 미리 OpenAI
+  `text-embedding-3-small`로 임베딩해 둔 31,077개 구절 스냅샷을 그대로 복원해
+  쓰므로, 배포 때마다 다시 임베딩할 필요가 없습니다. (`VECTOR_BACKEND="qdrant"`)
+  - 로컬 개발 중에는 `chroma_db`(자동 재생성, `data/bible_structured.json` 기반)를
+    계속 써도 됩니다 — 로컬 `.env`는 그대로 두고 Streamlit Cloud secrets에서만
+    `VECTOR_BACKEND=qdrant`로 오버라이드합니다.
 - **그래프DB**: 팀원 모두가 접속 가능한 **Neo4j Aura**(무료 티어)가 필요합니다.
   로컬 데이터를 그대로 옮기려면 `backend/scripts/migrate_neo4j_to_aura.py` 참고.
 
 ### 단계
 
 1. **Neo4j Aura 인스턴스 생성**: https://neo4j.com/product/auradb/ → 무료 인스턴스
-   생성 후 발급되는 URI/비밀번호를 저장해 둔다.
-2. **로컬 데이터를 Aura로 복사** (팀 데이터를 그대로 쓰려면):
-   ```bash
-   AURA_NEO4J_URI="neo4j+s://xxxx.databases.neo4j.io" \
-   AURA_NEO4J_PASSWORD="..." \
-   python backend/scripts/migrate_neo4j_to_aura.py
-   ```
-3. https://share.streamlit.io → **New app** → 레포 선택 → Main file path: `streamlit_app.py`
-4. **Advanced settings → Secrets** 에 아래 내용 입력 (`.env`가 아니라 이 Secrets가
+   생성 후 발급되는 Connection URI/사용자명/비밀번호를 **그 자리에서 바로 저장**해
+   둔다 (재확인이 안 되므로, 놓치면 인스턴스를 삭제하고 새로 만들어야 함).
+2. **로컬 그래프 데이터를 Aura로 복사**: `backend/scripts/migrate_neo4j_to_aura.py`
+   참고 (또는 Aura Query 콘솔에 직접 Cypher를 붙여넣어도 됨).
+3. **Qdrant Cloud 클러스터 생성**: https://cloud.qdrant.io → 무료 클러스터(1GB)
+   생성 후 URL과 API 키를 저장해 둔다.
+4. **로컬 Qdrant 스냅샷을 Qdrant Cloud로 복원**: 로컬 Qdrant(Docker)의
+   `bible_verses` 컬렉션 스냅샷을 만들어 Qdrant Cloud의 snapshot recovery API로
+   업로드한다 (컬렉션이 이미 OpenAI 임베딩 기준이라 재임베딩 불필요).
+5. https://share.streamlit.io → **New app** → 레포 선택 → Main file path: `streamlit_app.py`
+6. **Advanced settings → Secrets** 에 아래 내용 입력 (`.env`가 아니라 이 Secrets가
    배포판의 유일한 설정 소스입니다):
    ```toml
    OPENAI_API_KEY = "sk-..."
@@ -94,15 +99,19 @@ streamlit run streamlit_app.py
    EMBEDDING_PROVIDER = "openai"
    EMBEDDING_MODEL = "text-embedding-3-small"
 
-   # 1번에서 만든 Aura 접속 정보
+   # 벡터DB: Qdrant Cloud
+   VECTOR_BACKEND = "qdrant"
+   QDRANT_URL = "https://xxxx.cloud.qdrant.io"
+   QDRANT_API_KEY = "..."
+   QDRANT_COLLECTION = "bible_verses"
+
+   # 그래프DB: Neo4j Aura (1번에서 만든 접속 정보)
    NEO4J_URI = "neo4j+s://xxxx.databases.neo4j.io"
-   NEO4J_USER = "neo4j"
+   NEO4J_USER = "..."
    NEO4J_PASSWORD = "..."
-   NEO4J_DATABASE = "neo4j"
+   NEO4J_DATABASE = "..."
    ```
-5. Deploy → 최초 배포 시 벡터DB 자동 재생성으로 몇 분 걸릴 수 있습니다
-   (화면에 진행 스피너가 뜹니다). 이후 재시작부터는 컨테이너가 살아있는 동안
-   다시 만들지 않습니다.
+7. Deploy.
 
 **이후 `git push` 할 때마다 자동 재배포됩니다.** 팀원 전체가 같은 공유 URL로
 실시간 결과를 봅니다 — 별도로 각자 로컬을 띄울 필요가 없습니다.
@@ -114,7 +123,7 @@ streamlit run streamlit_app.py
 | 없을 때 | 동작 |
 |---|---|
 | Neo4j (Aura 미설정 포함) | `mock_data.SCORES` 궁합으로 추천 |
-| chroma_db / 재생성 실패 | 감정별 목업 구절 |
+| Qdrant/Chroma 연결 실패 | 감정별 목업 구절 |
 | OPENAI_API_KEY | 목업 페르소나 문장 |
 
 → **아무것도 없어도 앱은 끝까지 돕니다.**

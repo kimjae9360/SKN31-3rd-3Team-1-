@@ -13,8 +13,12 @@ langchain-community>=0.2
 langchain-openai>=0.1
 langchain-chroma>=0.1
 
-# ── Vector DB (chroma_db 있을 때만 실제 검색) ──────────
+# ── Vector DB ───────────────────────────────────────────
+# chroma: 로컬/자동재생성용. qdrant: 배포판 기본(Qdrant Cloud, 미리 임베딩된
+# 스냅샷을 그대로 씀 — OpenAI API만 쓰고 무거운 로컬 모델이 없어 가볍다).
 chromadb>=0.5
+qdrant-client>=1.9
+langchain-qdrant>=0.1
 
 # ── Graph DB (Neo4j 있을 때만, 없으면 목업 폴백) ───────
 neo4j>=5.18

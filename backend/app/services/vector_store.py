@@ -45,10 +45,24 @@ def _load_chroma():
     )
 
 
+def _load_qdrant():
+    from langchain_qdrant import QdrantVectorStore
+    from qdrant_client import QdrantClient
+    client = QdrantClient(
+        url=settings.QDRANT_URL,
+        api_key=settings.QDRANT_API_KEY or None,
+    )
+    return QdrantVectorStore(
+        client=client,
+        collection_name=settings.QDRANT_COLLECTION,
+        embedding=get_embeddings(),
+    )
+
+
 _LOADERS = {
     "chroma": _load_chroma,
+    "qdrant": _load_qdrant,
     # "faiss": _load_faiss,   # 필요 시 추가
-    # "qdrant": _load_qdrant,
 }
 
 
@@ -112,14 +126,32 @@ def ensure_vector_store() -> int:
     """
     벡터DB가 비어있으면(최초 배포/클라우드 콜드스타트 등) bible_structured.json으로부터
     자동으로 재생성한다. 이미 구절이 있으면 아무 것도 하지 않고 0을 반환.
-    반환값: 새로 임베딩한 구절 수 (재생성 없었으면 0).
+
+    Qdrant 백엔드는 대상이 아니다 — Qdrant Cloud는 미리 임베딩된 스냅샷을 복원해
+    쓰는 방식이라(build_vector_store가 로컬 임베딩 모델 경로를 가정), 여기서 자동
+    재생성을 시도하지 않는다.
+    반환값: 새로 임베딩한 구절 수 (재생성 없었거나 대상이 아니면 0).
     """
+    if settings.VECTOR_BACKEND.lower() != "chroma":
+        return 0
     if not vector_store_is_empty():
         return 0
     get_vector_store.cache_clear()  # 재생성 후 새 컬렉션을 다시 로드하도록
     n = build_vector_store()
     get_vector_store.cache_clear()
     return n
+
+
+def _build_filter(books: list[str]):
+    """graph-guided book 필터를 백엔드별 문법으로 변환."""
+    backend = settings.VECTOR_BACKEND.lower()
+    if backend == "qdrant":
+        from qdrant_client import models
+        return models.Filter(
+            must=[models.FieldCondition(key="metadata.book", match=models.MatchAny(any=books))]
+        )
+    # chroma metadata 필터 문법
+    return {"book": {"$in": books}} if len(books) > 1 else {"book": books[0]}
 
 
 def search(query: str, k: int | None = None, books: list[str] | None = None):
@@ -137,10 +169,7 @@ def search(query: str, k: int | None = None, books: list[str] | None = None):
     store = get_vector_store()
     k = k or settings.RETRIEVAL_K
 
-    # Chroma metadata 필터 문법. 백엔드 교체 시 이 부분만 조정.
-    flt = None
-    if books and settings.GRAPH_GUIDED_FILTER:
-        flt = {"book": {"$in": books}} if len(books) > 1 else {"book": books[0]}
+    flt = _build_filter(books) if (books and settings.GRAPH_GUIDED_FILTER) else None
 
     docs = store.similarity_search(query, k=k, filter=flt)
 
